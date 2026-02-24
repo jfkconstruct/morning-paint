@@ -1974,14 +1974,14 @@ export default function MorningPaint() {
             {showGallery && (
               <div style={{
                 position: 'absolute', top: '100%', right: 0, marginTop: 8,
-                width: 280, maxHeight: 360, overflowY: 'auto',
+                width: 280, maxHeight: 480, overflowY: 'auto',
                 background: C.toolbar, backdropFilter: 'blur(40px)', WebkitBackdropFilter: 'blur(40px)',
                 borderRadius: 14, padding: 12,
                 boxShadow: '0 8px 40px rgba(0,0,0,0.15), 0 0 0 0.5px rgba(0,0,0,0.08)',
               }}>
-                {['Mandala', 'Mayan'].map(cat => (
+                {[...new Set(COLORING_PAGES.map(p => p.cat))].map((cat, i) => (
                   <div key={cat}>
-                    <div style={{ fontSize: 10, fontWeight: 600, color: C.dim, fontFamily: MONO, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6, marginTop: cat !== 'Mandala' ? 10 : 0 }}>{cat}</div>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: C.dim, fontFamily: MONO, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6, marginTop: i > 0 ? 10 : 0 }}>{cat}</div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 4 }}>
                       {COLORING_PAGES.filter(p => p.cat === cat).map(page => (
                         <button key={page.id} onClick={() => loadBgFromUrl(page.src)} style={{
