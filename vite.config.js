@@ -9,7 +9,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['coloring-pages/*.jpg'],
+      includeAssets: ['coloring-pages/*.jpg', 'coloring-pages/*.png'],
       manifest: {
         name: 'Morning Paint',
         short_name: 'Paint',
