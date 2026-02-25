@@ -563,26 +563,30 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const vel = Math.max(0, Math.min(velocity ?? 0, 1))
   const pr = Math.max(0.0, Math.min(pressure ?? 0.5, 1))
 
-  // Width: pressure is primary driver with steep curve for dramatic thick-thin.
-  // Real brush: hairline at light touch, very fat at full press (~8:1 ratio).
-  const prCurve = Math.pow(pr, 1.8)
-  const velFactor = Math.max(0.2, 1 - vel * 0.75)
-  const wBase = size * (0.04 + prCurve * 0.96)
-  const w = Math.max(size * 0.02, wBase * velFactor)
-  const minMinor = Math.max(size * 0.04, w * 0.18)
+  // Width: steep pressure curve for dramatic thick-thin (~20:1 ratio).
+  // Real brush tip: hairline at light touch, very fat at full press.
+  const prCurve = Math.pow(pr, 2.2)
+  const velFactor = Math.max(0.12, 1 - vel * 0.85)
+  const wBase = size * (0.02 + prCurve * 1.1)
+  const w = Math.max(size * 0.015, wBase * velFactor)
+  const minMinor = Math.max(size * 0.03, w * 0.15)
+
+  // Directional width: vertical strokes wider than horizontal (brush anisotropy)
+  const angle = Math.atan2(dy, dx)
+  const verticalness = Math.abs(Math.sin(angle))
+  const dirWidth = w * (0.8 + verticalness * 0.4)
 
   // Pressure→opacity: light touch = grey wash, heavy = near-solid
-  const pressureAlpha = Math.pow(pr, 0.6)
-  const speedAlpha = 1 - vel * 0.2
-  ctx.globalAlpha = (0.3 + pressureAlpha * 0.7) * speedAlpha
+  const pressureAlpha = Math.pow(pr, 0.5)
+  const speedAlpha = 1 - vel * 0.15
+  ctx.globalAlpha = (0.35 + pressureAlpha * 0.65) * speedAlpha
   ctx.fillStyle = color
 
   // Directional stamping along the segment for a brush-like footprint
-  const angle = Math.atan2(dy, dx)
-  const step = Math.max(0.5, Math.min(1.2, w * (0.3 - vel * 0.1)))
+  const step = Math.max(0.5, Math.min(1.2, dirWidth * (0.3 - vel * 0.1)))
   const steps = Math.max(1, Math.ceil(dist / step))
-  const baseMajor = w * (1.1 + vel * 0.55)
-  const minor = Math.max(minMinor, w)
+  const baseMajor = dirWidth * (1.1 + vel * 0.55)
+  const minor = Math.max(minMinor, dirWidth)
   // Clamp major axis to segment length to prevent oversized stamps on tiny segments
   const major = Math.min(baseMajor, Math.max(dist * 1.2, minor))
   // Start at i=1 to avoid double-stamping shared endpoints between segments
@@ -2375,9 +2379,11 @@ export default function MorningPaint() {
       const rawWp = screenToWorld(sp.x, sp.y)
       const isPen = pointerTypeRef.current === 'pen'
       const rawPressure = getPointerPressure(ev, lastPosRef.current, rawWp, isPen)
-      const emaIn = isPen ? 0.22 : 0.3
+      // Faster EMA at stroke start (first 6 events) for sharp entry
+      const strokeAge = splineBufferRef.current.length
+      const emaIn = isPen ? (strokeAge < 6 ? 0.45 : 0.22) : 0.3
       let pressure = paintPressureRef.current * (1 - emaIn) + rawPressure * emaIn
-      const maxStep = isPen ? 0.035 : 0.05
+      const maxStep = isPen ? (strokeAge < 6 ? 0.08 : 0.035) : 0.05
       const delta = pressure - paintPressureRef.current
       if (Math.abs(delta) > maxStep) pressure = paintPressureRef.current + Math.sign(delta) * maxStep
       if (isPen && curBrush !== 'calligraphy') pressure = 0.08 + pressure * 0.28
