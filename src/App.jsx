@@ -547,9 +547,8 @@ function paintWetEdge(tiles, path, color, size, opacity) {
 
 
 // Calligraphy: Zen/Chinese pointed brush
-// Directional brush stamp with tapered feel. Width from pressure, velocity thins/elongates.
-// Pressure controls both width AND opacity: light = grey wash, heavy = solid black.
-// Dry brush = scattered dots at high speed. Ink bleed = rare soft edge dots.
+// Ribbon segment model (variable-width quad) for continuous "brush body" feel.
+// Width is pressure-dominant with mild velocity thinning.
 function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   ctx.save()
   ctx.globalCompositeOperation = 'source-over'
@@ -557,70 +556,52 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const dx = to.x - from.x
   const dy = to.y - from.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-  // Skip micro-segments; they tend to create bead artifacts with stamped ellipses.
-  if (dist < 0.12) { ctx.restore(); return }
+  if (dist < 0.03) { ctx.restore(); return }
 
   const vel = Math.max(0, Math.min(velocity ?? 0, 1))
-  const pr = Math.max(0.0, Math.min(pressure ?? 0.5, 1))
+  const pFrom = Math.max(0, Math.min(from?.pressure ?? pressure ?? 0.5, 1))
+  const pTo = Math.max(0, Math.min(to?.pressure ?? pressure ?? 0.5, 1))
 
-  // Width: pressure is primary driver, velocity thins the stroke
-  const velFactor = Math.max(0.35, 1 - vel * 0.6)
-  const wBase = size * (0.18 + pr * 0.72)
-  const w = Math.max(size * 0.03, wBase * velFactor)
-  const minMinor = Math.max(size * 0.06, w * 0.18)
+  const ux = dx / dist
+  const uy = dy / dist
+  const nx = -uy
+  const ny = ux
 
-  // Pressure→opacity: light touch = grey wash, full press = solid black
-  // Coupled with pressure^0.6 curve so light strokes fade more aggressively
-  const pressureAlpha = Math.pow(pr, 0.75)
-  const speedAlpha = 1 - vel * 0.25
-  ctx.globalAlpha = (0.2 + pressureAlpha * 0.8) * speedAlpha
+  // Chinese calligraphy feel: pressure drives width, velocity only trims slightly.
+  const thin = Math.max(0.82, 1 - vel * 0.18)
+  const minW = Math.max(size * 0.05, 0.3)
+  const widthFrom = Math.max(minW, size * (0.08 + Math.pow(pFrom, 0.7) * 0.92) * thin)
+  const widthTo = Math.max(minW, size * (0.08 + Math.pow(pTo, 0.7) * 0.92) * thin)
+  const hwFrom = widthFrom * 0.5
+  const hwTo = widthTo * 0.5
+
+  const l1x = from.x + nx * hwFrom
+  const l1y = from.y + ny * hwFrom
+  const r1x = from.x - nx * hwFrom
+  const r1y = from.y - ny * hwFrom
+  const l2x = to.x + nx * hwTo
+  const l2y = to.y + ny * hwTo
+  const r2x = to.x - nx * hwTo
+  const r2y = to.y - ny * hwTo
+
+  const pAvg = (pFrom + pTo) * 0.5
+  const alpha = 0.25 + 0.75 * Math.pow(pAvg, 0.8)
+  ctx.globalAlpha = alpha
   ctx.fillStyle = color
 
-  // Directional stamping along the segment for a brush-like footprint
-  const angle = Math.atan2(dy, dx)
-  const step = Math.max(0.35, w * (0.35 - vel * 0.12))
-  const steps = Math.max(1, Math.ceil(dist / step))
-  const major = w * (1.1 + vel * 0.55)
-  const minor = Math.max(minMinor, w)
-  // Start at i=1 so adjacent segments don't double-stamp shared endpoints.
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps
-    const px = from.x + dx * t
-    const py = from.y + dy * t
-    ctx.save()
-    ctx.translate(px, py)
-    ctx.rotate(angle)
-    ctx.beginPath()
-    ctx.ellipse(0, 0, major * 0.5, minor * 0.5, 0, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.restore()
-  }
-
-  // Subtle core line to reduce gaps between stamps
-  ctx.save()
-  ctx.globalAlpha *= 0.15
-  ctx.strokeStyle = color
-  ctx.lineWidth = Math.max(minMinor * 0.6, size * 0.02)
-  ctx.lineCap = 'round'
-  ctx.lineJoin = 'round'
+  // Fill a tapered ribbon segment.
   ctx.beginPath()
-  ctx.moveTo(from.x, from.y)
-  ctx.lineTo(to.x, to.y)
-  ctx.stroke()
-  ctx.restore()
+  ctx.moveTo(l1x, l1y)
+  ctx.lineTo(l2x, l2y)
+  ctx.lineTo(r2x, r2y)
+  ctx.lineTo(r1x, r1y)
+  ctx.closePath()
+  ctx.fill()
 
-  // Rare ink bleed at edges: slow + heavy strokes only
-  if (vel < 0.06 && pr > 0.7 && w > 8 && Math.random() < 0.015) {
-    const mx = (from.x + to.x) * 0.5
-    const my = (from.y + to.y) * 0.5
-    const angle = Math.random() * Math.PI * 2
-    const bleedDist = w * 0.5 * (0.9 + Math.random() * 0.3)
-    ctx.fillStyle = color
-    ctx.globalAlpha = 0.06 + Math.random() * 0.06
-    ctx.beginPath()
-    ctx.arc(mx + Math.cos(angle) * bleedDist, my + Math.sin(angle) * bleedDist, 0.5 + Math.random() * 1, 0, Math.PI * 2)
-    ctx.fill()
-  }
+  // Round tail-end cap for smoother joins between adjacent segments.
+  ctx.beginPath()
+  ctx.arc(to.x, to.y, hwTo, 0, Math.PI * 2)
+  ctx.fill()
 
   ctx.restore()
 }
@@ -2468,14 +2449,14 @@ export default function MorningPaint() {
             const basePressure = p2.pressure ?? 0.5
             const tailVel = Math.min(velocityRef.current / 3.0, 1.0)
             // Avoid long terminal spikes on fast lift.
-            if (tailVel < 0.55) {
-              const tailLen = Math.max(0.4, size * 0.32 * (0.35 + basePressure))
-              const steps = 2
+            if (tailVel < 0.45) {
+              const tailLen = Math.max(0.25, size * 0.18 * (0.25 + basePressure))
+              const steps = 3
               let prev = { x: p2.x, y: p2.y }
               for (let i = 1; i <= steps; i++) {
                 const t = i / steps
                 const pt = { x: p2.x + ux * tailLen * t, y: p2.y + uy * tailLen * t }
-                const pr = basePressure * (1 - t)
+                const pr = basePressure * Math.pow(1 - t, 1.6)
                 paintToBuffer(strokeBufRef.current, prev, pt, color, size, pr, tailVel, strokeCalligraphy)
                 prev = pt
               }
