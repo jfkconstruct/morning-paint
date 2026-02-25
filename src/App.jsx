@@ -578,15 +578,18 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
 
   // Directional stamping along the segment for a brush-like footprint
   const angle = Math.atan2(dy, dx)
-  const step = Math.max(0.35, w * (0.35 - vel * 0.12))
+  const step = Math.max(0.35, Math.min(1.0, w * (0.28 - vel * 0.1)))
   const steps = Math.max(1, Math.ceil(dist / step))
   const major = w * (1.1 + vel * 0.55)
   const minor = Math.max(minMinor, w)
-  // Start at i=1 so adjacent segments don't double-stamp shared endpoints.
-  for (let i = 1; i <= steps; i++) {
+  const baseAlpha = ctx.globalAlpha
+  for (let i = 0; i <= steps; i++) {
     const t = i / steps
     const px = from.x + dx * t
     const py = from.y + dy * t
+    // Soften endpoint stamps to reduce double-stamp darkening; organic variation
+    const endFade = (i === 0 || i === steps) ? 0.7 : 1.0
+    ctx.globalAlpha = baseAlpha * endFade * (0.92 + Math.random() * 0.16)
     ctx.save()
     ctx.translate(px, py)
     ctx.rotate(angle)
