@@ -120,6 +120,19 @@ function sampleGrain(wx, wy) {
   return data[gy * GRAIN_SIZE + gx]
 }
 
+function getSplineConfig(brushId, isPen) {
+  if (brushId === 'inkwash') {
+    return isPen ? { min: 3, max: 10, divisor: 2.8 } : { min: 2, max: 8, divisor: 3.2 }
+  }
+  if (brushId === 'felt') {
+    return isPen ? { min: 4, max: 12, divisor: 2.4 } : { min: 3, max: 10, divisor: 2.8 }
+  }
+  if (brushId === 'watercolor' || brushId === 'watercolor2') {
+    return isPen ? { min: 5, max: 14, divisor: 2.2 } : { min: 4, max: 12, divisor: 2.6 }
+  }
+  return isPen ? { min: 6, max: 18, divisor: 1.9 } : { min: 5, max: 14, divisor: 2.2 }
+}
+
 // ─── COLORING PAGE GALLERY ───
 const COLORING_PAGES = [
   { id: 'calligraphy-yong', label: 'Yong Grid', cat: 'Calligraphy', src: '/calligraphy/yong-grid.svg', thumb: '永' },
@@ -623,7 +636,8 @@ function strokeInkWash(ctx, from, to, color, size, pressure, velocity) {
   const dx = to.x - from.x
   const dy = to.y - from.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-  if (dist < 0.2) { ctx.restore(); return }
+  // Ignore only true stationary events; keep tiny segments to avoid visible gaps.
+  if (dist < 0.005) { ctx.restore(); return }
 
   const vel = Math.max(0, Math.min(velocity ?? 1.0, 1))
   const velFactor = Math.max(0.55, 1 - vel * 0.45)
@@ -1810,10 +1824,11 @@ export default function MorningPaint() {
 
     // Adaptive alpha: fast = near-raw, slow = heavy smoothing
     // Watercolor gets extra smoothing for that flowing, liquid feel
-    const isWatercolor = brushRef.current === 'watercolor' || brushRef.current === 'watercolor2'
+    const isFlowBrush = brushRef.current === 'watercolor' || brushRef.current === 'watercolor2' || brushRef.current === 'inkwash'
+    const isFelt = brushRef.current === 'felt'
     const isPen = pointerTypeRef.current === 'pen'
-    const minAlpha = isWatercolor ? 0.2 : (isPen ? 0.28 : 0.4)
-    const maxAlpha = isWatercolor ? 0.7 : (isPen ? 0.72 : 0.9)
+    const minAlpha = isFlowBrush ? 0.2 : (isPen && isFelt ? 0.22 : (isPen ? 0.28 : 0.4))
+    const maxAlpha = isFlowBrush ? 0.68 : (isPen && isFelt ? 0.66 : (isPen ? 0.72 : 0.9))
     const velocityThreshold = 3.0
     const alpha = minAlpha + Math.min(velocityRef.current / velocityThreshold, 1.0) * (maxAlpha - minAlpha)
 
@@ -2154,8 +2169,9 @@ export default function MorningPaint() {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top }
   }
 
-  const getPointerPressure = useCallback((e, from, to) => {
-    if (e.pointerType === 'pen') {
+  const getPointerPressure = useCallback((e, from, to, penOverride = false) => {
+    const isPenInput = penOverride || e.pointerType === 'pen' || pointerTypeRef.current === 'pen'
+    if (isPenInput) {
       if (e.pressure > 0) {
         const mapped = clamp01(Math.pow(mapPressure(e.pressure), 0.9))
         // Felt should be steadier (less jagged pressure wobble)
@@ -2338,7 +2354,11 @@ export default function MorningPaint() {
     if (!drawingRef.current) return
 
     const drawEvents = (e.pointerType === 'pen' && typeof e.getCoalescedEvents === 'function')
-      ? e.getCoalescedEvents()
+      ? (() => {
+        const coalesced = e.getCoalescedEvents()
+        // TODO: add a lightweight counter for empty coalesced batches on Pencil/iPad Safari.
+        return coalesced && coalesced.length > 0 ? coalesced : [e]
+      })()
       : [e]
 
     // Catmull-Rom interpolation: when we have 4+ points, interpolate through spline
@@ -2348,8 +2368,8 @@ export default function MorningPaint() {
     for (const ev of drawEvents) {
       const sp = getScreenPos(ev)
       const rawWp = screenToWorld(sp.x, sp.y)
-      const rawPressure = getPointerPressure(ev, lastPosRef.current, rawWp)
       const isPen = pointerTypeRef.current === 'pen'
+      const rawPressure = getPointerPressure(ev, lastPosRef.current, rawWp, isPen)
       const emaIn = isPen ? 0.12 : 0.3
       let pressure = paintPressureRef.current * (1 - emaIn) + rawPressure * emaIn
       const maxStep = isPen ? 0.018 : 0.05
@@ -2396,9 +2416,11 @@ export default function MorningPaint() {
         const p2 = buf[buf.length - 2]
         const p3 = buf[buf.length - 1]
         const segDist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
-        const maxSegs = isPen ? 24 : 16
-        const minSegs = isPen ? 8 : 6
-        const splineSegs = Math.max(minSegs, Math.min(maxSegs, Math.ceil(segDist / (isPen ? 1.6 : 2))))
+        const splineCfg = getSplineConfig(curBrush, isPen)
+        const splineSegs = Math.max(
+          splineCfg.min,
+          Math.min(splineCfg.max, Math.ceil(segDist / splineCfg.divisor))
+        )
         const splinePoints = catmullRomSegment(p0, p1, p2, p3, splineSegs)
         for (let i = 1; i < splinePoints.length; i++) {
           paintSeg(splinePoints[i - 1], splinePoints[i], splinePoints[i].pressure)
