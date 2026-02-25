@@ -2434,8 +2434,6 @@ export default function MorningPaint() {
           paintSeg(lastSplinePt, sp, sp.pressure)
           lastSplinePt = sp
         }
-      } else if (buf.length >= 3) {
-        paintSeg(lastPosRef.current || wp, wp, pressure)
       }
 
       lastPosRef.current = wp
