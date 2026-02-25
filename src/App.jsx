@@ -578,10 +578,12 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
 
   // Directional stamping along the segment for a brush-like footprint
   const angle = Math.atan2(dy, dx)
-  const step = Math.max(0.35, Math.min(1.0, w * (0.28 - vel * 0.1)))
+  const step = Math.max(0.5, Math.min(1.2, w * (0.3 - vel * 0.1)))
   const steps = Math.max(1, Math.ceil(dist / step))
-  const major = w * (1.1 + vel * 0.55)
+  const baseMajor = w * (1.1 + vel * 0.55)
   const minor = Math.max(minMinor, w)
+  // Clamp major axis to segment length to prevent oversized stamps on tiny segments
+  const major = Math.min(baseMajor, Math.max(dist * 1.2, minor))
   // Start at i=1 to avoid double-stamping shared endpoints between segments
   for (let i = 1; i <= steps; i++) {
     const t = i / steps
@@ -2426,7 +2428,7 @@ export default function MorningPaint() {
         for (let i = 1; i < splinePoints.length; i++) {
           paintSeg(splinePoints[i - 1], splinePoints[i], splinePoints[i].pressure)
         }
-      } else if (buf.length >= 2) {
+      } else if (buf.length >= 3) {
         paintSeg(lastPosRef.current || wp, wp, pressure)
       }
 
