@@ -118,6 +118,9 @@ function sampleGrain(wx, wy) {
 
 // ─── COLORING PAGE GALLERY ───
 const COLORING_PAGES = [
+  { id: 'calligraphy-yong', label: 'Yong Grid', cat: 'Calligraphy', src: '/calligraphy/yong-grid.svg' },
+  { id: 'calligraphy-basics', label: 'Basics Grid', cat: 'Calligraphy', src: '/calligraphy/basics-grid.svg' },
+  { id: 'calligraphy-radicals', label: 'Radicals Grid', cat: 'Calligraphy', src: '/calligraphy/radicals-grid.svg' },
   { id: 'mandala-simple-1', label: 'Simple Mandala', cat: 'Mandala', src: '/coloring-pages/mandala-simple-1.jpg' },
   { id: 'mandala-simple-2', label: 'Flower Mandala', cat: 'Mandala', src: '/coloring-pages/mandala-simple-2.jpg' },
   { id: 'mandala-1', label: 'Mandala I', cat: 'Mandala', src: '/coloring-pages/mandala-1.jpg' },

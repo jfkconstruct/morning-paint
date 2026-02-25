@@ -1,0 +1,36 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='1000' height='800' viewBox='0 0 1000 800'>
+<defs>
+<pattern id='mizi' width='200' height='200' patternUnits='userSpaceOnUse'>
+  <rect width='200' height='200' fill='#fff' />
+  <rect width='200' height='200' fill='none' stroke='rgba(0,0,0,0.08)' stroke-width='1' />
+  <line x1='0' y1='100.0' x2='200' y2='100.0' stroke='rgba(0,0,0,0.05)' stroke-width='1' />
+  <line x1='100.0' y1='0' x2='100.0' y2='200' stroke='rgba(0,0,0,0.05)' stroke-width='1' />
+  <line x1='0' y1='0' x2='200' y2='200' stroke='rgba(0,0,0,0.04)' stroke-width='1' />
+  <line x1='200' y1='0' x2='0' y2='200' stroke='rgba(0,0,0,0.04)' stroke-width='1' />
+</pattern>
+</defs>
+<rect width='100%' height='100%' fill='url(#mizi)' />
+<g fill='rgba(0,0,0,0.18)' font-family='Noto Serif TC','Songti TC','PingFang TC','Hiragino Sans','STSong','PMingLiU','MingLiU',serif font-size='120' text-anchor='middle' dominant-baseline='middle'>
+  <text x='100.0' y='100.0'>永</text>
+  <text x='300.0' y='100.0'>永</text>
+  <text x='500.0' y='100.0'>永</text>
+  <text x='700.0' y='100.0'>永</text>
+  <text x='900.0' y='100.0'>永</text>
+  <text x='100.0' y='300.0'>永</text>
+  <text x='300.0' y='300.0'>永</text>
+  <text x='500.0' y='300.0'>永</text>
+  <text x='700.0' y='300.0'>永</text>
+  <text x='900.0' y='300.0'>永</text>
+  <text x='100.0' y='500.0'>永</text>
+  <text x='300.0' y='500.0'>永</text>
+  <text x='500.0' y='500.0'>永</text>
+  <text x='700.0' y='500.0'>永</text>
+  <text x='900.0' y='500.0'>永</text>
+  <text x='100.0' y='700.0'>永</text>
+  <text x='300.0' y='700.0'>永</text>
+  <text x='500.0' y='700.0'>永</text>
+  <text x='700.0' y='700.0'>永</text>
+  <text x='900.0' y='700.0'>永</text>
+</g>
+<metadata>Yong grid practice</metadata>
+</svg>
