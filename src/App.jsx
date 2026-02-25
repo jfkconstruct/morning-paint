@@ -546,6 +546,7 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const velFactor = Math.max(0.35, 1 - vel * 0.6)
   const wBase = size * (0.04 + pr * 0.96)
   const w = Math.max(size * 0.03, wBase * velFactor)
+  const minMinor = Math.max(size * 0.06, w * 0.18)
 
   // Pressure→opacity: light touch = grey wash, full press = solid black
   // Coupled with pressure^0.6 curve so light strokes fade more aggressively
@@ -556,10 +557,10 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
 
   // Directional stamping along the segment for a brush-like footprint
   const angle = Math.atan2(dy, dx)
-  const step = Math.max(0.35, w * 0.35)
+  const step = Math.max(0.35, w * (0.35 - vel * 0.12))
   const steps = Math.max(1, Math.ceil(dist / step))
   const major = w * (1.2 + vel * 0.9)
-  const minor = w
+  const minor = Math.max(minMinor, w)
   for (let i = 0; i <= steps; i++) {
     const t = i / steps
     const px = from.x + dx * t
@@ -572,6 +573,19 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
     ctx.fill()
     ctx.restore()
   }
+
+  // Subtle core line to reduce gaps between stamps
+  ctx.save()
+  ctx.globalAlpha *= 0.15
+  ctx.strokeStyle = color
+  ctx.lineWidth = Math.max(minMinor * 0.6, size * 0.02)
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  ctx.moveTo(from.x, from.y)
+  ctx.lineTo(to.x, to.y)
+  ctx.stroke()
+  ctx.restore()
 
   // Rare ink bleed at edges: slow + heavy strokes only
   if (vel < 0.15 && pr > 0.5 && w > 6 && Math.random() < 0.08) {
@@ -2378,9 +2392,9 @@ export default function MorningPaint() {
           if (dist > 0.01) {
             const ux = dx / dist
             const uy = dy / dist
-            const tailLen = Math.max(1, size * 0.9)
-            const steps = 4
             const basePressure = p2.pressure ?? 0.5
+            const tailLen = Math.max(0.5, size * 0.45 * (0.4 + basePressure))
+            const steps = 3
             const tailVel = Math.min(velocityRef.current / 3.0, 1.0)
             let prev = { x: p2.x, y: p2.y }
             for (let i = 1; i <= steps; i++) {
