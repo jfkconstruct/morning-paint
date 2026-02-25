@@ -118,9 +118,9 @@ function sampleGrain(wx, wy) {
 
 // ─── COLORING PAGE GALLERY ───
 const COLORING_PAGES = [
-  { id: 'calligraphy-yong', label: 'Yong Grid', cat: 'Calligraphy', src: '/calligraphy/yong-grid.svg' },
-  { id: 'calligraphy-basics', label: 'Basics Grid', cat: 'Calligraphy', src: '/calligraphy/basics-grid.svg' },
-  { id: 'calligraphy-radicals', label: 'Radicals Grid', cat: 'Calligraphy', src: '/calligraphy/radicals-grid.svg' },
+  { id: 'calligraphy-yong', label: 'Yong Grid', cat: 'Calligraphy', src: '/calligraphy/yong-grid.svg', thumb: '永' },
+  { id: 'calligraphy-basics', label: 'Basics Grid', cat: 'Calligraphy', src: '/calligraphy/basics-grid.svg', thumb: '書' },
+  { id: 'calligraphy-radicals', label: 'Radicals Grid', cat: 'Calligraphy', src: '/calligraphy/radicals-grid.svg', thumb: '一丨' },
   { id: 'mandala-simple-1', label: 'Simple Mandala', cat: 'Mandala', src: '/coloring-pages/mandala-simple-1.jpg' },
   { id: 'mandala-simple-2', label: 'Flower Mandala', cat: 'Mandala', src: '/coloring-pages/mandala-simple-2.jpg' },
   { id: 'mandala-1', label: 'Mandala I', cat: 'Mandala', src: '/coloring-pages/mandala-1.jpg' },
@@ -2562,32 +2562,60 @@ export default function MorningPaint() {
     scheduleRender()
   }, [scheduleRender])
 
-  const loadBgFromUrl = useCallback((url) => {
-    const img = new Image()
-    img.onload = () => {
-      bgImageRef.current = img
-      const v = viewRef.current
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const dpr = window.devicePixelRatio || 1
-      const vpW = canvas.width / dpr / v.zoom
-      const vpH = canvas.height / dpr / v.zoom
-      const maxW = vpW * 0.8
-      const maxH = vpH * 0.8
-      const scale = Math.min(maxW / img.width, maxH / img.height)
-      const w = img.width * scale
-      const h = img.height * scale
-      bgImagePosRef.current = {
-        x: v.ox + (vpW - w) / 2,
-        y: v.oy + (vpH - h) / 2,
-        w, h,
-      }
-      setHasBgImage(true)
-      setShowGallery(false)
-      scheduleRender()
+  const placeBgImage = useCallback((img) => {
+    bgImageRef.current = img
+    const v = viewRef.current
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const dpr = window.devicePixelRatio || 1
+    const vpW = canvas.width / dpr / v.zoom
+    const vpH = canvas.height / dpr / v.zoom
+    const maxW = vpW * 0.8
+    const maxH = vpH * 0.8
+    const scale = Math.min(maxW / img.width, maxH / img.height)
+    const w = img.width * scale
+    const h = img.height * scale
+    bgImagePosRef.current = {
+      x: v.ox + (vpW - w) / 2,
+      y: v.oy + (vpH - h) / 2,
+      w, h,
     }
-    img.src = url
+    setHasBgImage(true)
+    setShowGallery(false)
+    scheduleRender()
   }, [scheduleRender])
+
+  const loadBgFromUrl = useCallback((url) => {
+    if (url.endsWith('.svg')) {
+      // SVGs with <text> need rasterization with system fonts available
+      fetch(url).then(r => r.text()).then(svgText => {
+        const parser = new DOMParser()
+        const doc = parser.parseFromString(svgText, 'image/svg+xml')
+        const svgEl = doc.documentElement
+        const w = parseInt(svgEl.getAttribute('width')) || 1000
+        const h = parseInt(svgEl.getAttribute('height')) || 800
+        const offscreen = document.createElement('canvas')
+        offscreen.width = w
+        offscreen.height = h
+        const ctx = offscreen.getContext('2d')
+        // Render SVG via blob URL with proper MIME so fonts resolve
+        const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' })
+        const blobUrl = URL.createObjectURL(blob)
+        const img = new Image()
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0, w, h)
+          URL.revokeObjectURL(blobUrl)
+          // Use the rasterized canvas as the background image
+          placeBgImage(offscreen)
+        }
+        img.src = blobUrl
+      })
+    } else {
+      const img = new Image()
+      img.onload = () => placeBgImage(img)
+      img.src = url
+    }
+  }, [placeBgImage])
 
   const selectBrush = useCallback((id) => {
     if (id === 'eraser' || id === 'smudge' || id === 'fill') {
@@ -2794,7 +2822,14 @@ export default function MorningPaint() {
                           onPointerEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
                           onPointerLeave={e => e.currentTarget.style.transform = 'scale(1)'}
                         >
-                          <img src={page.src} alt={page.label} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 5 }} />
+                          {page.thumb ? (
+                            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, background: '#fafafa', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontSize: 28, lineHeight: 1 }}>{page.thumb}</span>
+                              <span style={{ fontSize: 7, color: C.dim, fontWeight: 600 }}>{page.label}</span>
+                            </div>
+                          ) : (
+                            <img src={page.src} alt={page.label} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 5 }} />
+                          )}
                         </button>
                       ))}
                     </div>
