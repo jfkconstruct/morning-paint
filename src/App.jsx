@@ -350,9 +350,9 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
 
   const speedFactor = Math.max(0.6, Math.min(1.0, 1.15 - vel * 0.4))
   const w = size * (0.9 + pressure * 0.5)
-  const stepSize = Math.max(size * 0.22, 3)
+  const stepSize = Math.max(size * 0.16, 2.2)
   const steps = Math.max(Math.floor(dist / stepSize), 1)
-  const jitter = w * 0.25
+  const jitter = w * 0.38
   const invDist = 1 / dist
 
   // Buffer mode: paint at elevated alpha; entire stroke composited at ~18% on pen-up
@@ -364,9 +364,8 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
   ctx.filter = 'blur(1.2px)'
   for (let i = 0; i <= steps; i++) {
     const t = i / steps
-    const along = (Math.random() - 0.5) * w * 0.5
-    const x = from.x + dx * t + (Math.random() - 0.5) * jitter + dx * invDist * along
-    const y = from.y + dy * t + (Math.random() - 0.5) * jitter + dy * invDist * along
+    const x = from.x + dx * t + (Math.random() - 0.5) * jitter
+    const y = from.y + dy * t + (Math.random() - 0.5) * jitter
     const grain = sampleGrain(x, y)
     const grainMod = 0.85 + grain * 0.4
 
@@ -391,9 +390,8 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
     const bloomCount = Math.ceil(dist / (size * 1.1))
     for (let i = 0; i < bloomCount; i++) {
       const t = Math.random()
-      const along = (Math.random() - 0.5) * w * 0.6
-      const bx = from.x + dx * t + (Math.random() - 0.5) * w * 0.7 + dx * invDist * along
-      const by = from.y + dy * t + (Math.random() - 0.5) * w * 0.7 + dy * invDist * along
+      const bx = from.x + dx * t + (Math.random() - 0.5) * w * 0.7
+      const by = from.y + dy * t + (Math.random() - 0.5) * w * 0.7
       const grain = sampleGrain(bx, by)
       const br = w * (0.8 + Math.random() * 0.8)
       const a = (0.03 + pressure * 0.06) * (0.55 + grain * 0.45) * speedFactor
@@ -1060,9 +1058,10 @@ const STROKE_FN = {
 }
 
 // ─── FLOOD FILL (scanline, tile-aware, zero-alloc visited) ───
-const FILL_COLOR_TOLERANCE = 60 // Euclidean RGB tolerance
+const FILL_COLOR_TOLERANCE = 60 // Base Euclidean RGB tolerance
 const FILL_ALPHA_WEIGHT = 0.15  // reduce alpha banding in soft washes
 const FILL_TRANSPARENT_ALPHA = 24
+const FILL_TRANSPARENT_TOLERANCE_MULT = 2.2
 const FILL_MAX_PIXELS = 800000  // hard cap to stay responsive
 
 function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
@@ -1115,7 +1114,14 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
   sb = Math.round(sb / sc)
   sa = Math.round(sa / sc)
 
-  const colorTolSq = FILL_COLOR_TOLERANCE * FILL_COLOR_TOLERANCE
+  const transparency = 1 - (sa / 255)
+  const tol = FILL_COLOR_TOLERANCE * (1 + transparency * (FILL_TRANSPARENT_TOLERANCE_MULT - 1))
+  const colorTolSq = tol * tol
+
+  const seedAlphaNorm = sa / 255
+  const srP = sr * seedAlphaNorm
+  const sgP = sg * seedAlphaNorm
+  const sbP = sb * seedAlphaNorm
 
   // Don't fill if seed is already the fill color
   {
@@ -1134,7 +1140,14 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
     const dr = e.data[i] - sr
     const dg = e.data[i + 1] - sg
     const db = e.data[i + 2] - sb
-    const colorDist = dr * dr + dg * dg + db * db
+    const a = e.data[i + 3] / 255
+    const pr = e.data[i] * a
+    const pg = e.data[i + 1] * a
+    const pb = e.data[i + 2] * a
+    const pdr = pr - srP
+    const pdg = pg - sgP
+    const pdb = pb - sbP
+    const colorDist = pdr * pdr + pdg * pdg + pdb * pdb
     if (sa < 8) {
       return e.data[i + 3] < FILL_TRANSPARENT_ALPHA && colorDist <= colorTolSq
     }
