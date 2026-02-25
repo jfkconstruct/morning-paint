@@ -585,10 +585,11 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   // Directional stamping along the segment for a brush-like footprint
   const step = Math.max(0.5, Math.min(1.2, dirWidth * (0.3 - vel * 0.1)))
   const steps = Math.max(1, Math.ceil(dist / step))
-  const baseMajor = dirWidth * (1.1 + vel * 0.55)
+  // Keep stamps near-circular to avoid pointy artifacts; slight elongation only
+  const baseMajor = dirWidth * (1.0 + vel * 0.2)
   const minor = Math.max(minMinor, dirWidth)
   // Clamp major axis to segment length to prevent oversized stamps on tiny segments
-  const major = Math.min(baseMajor, Math.max(dist * 1.2, minor))
+  const major = Math.min(baseMajor, Math.max(dist * 1.1, minor))
   // Start at i=1 to avoid double-stamping shared endpoints between segments
   for (let i = 1; i <= steps; i++) {
     const t = i / steps
@@ -2473,33 +2474,7 @@ export default function MorningPaint() {
 
       // Defer heavy composite work so next startDraw isn't blocked
       setTimeout(() => {
-        // Calligraphy: add a short tapered tail on lift for a pointed finish
-        if (bufBrush === 'calligraphy' && pendingSpline.length >= 2) {
-          const p2 = pendingSpline[pendingSpline.length - 1]
-          const p1 = pendingSpline[pendingSpline.length - 2]
-          const dx = p2.x - p1.x
-          const dy = p2.y - p1.y
-          const dist = Math.sqrt(dx * dx + dy * dy)
-          if (dist > 0.01) {
-            const ux = dx / dist
-            const uy = dy / dist
-            const basePressure = p2.pressure ?? 0.5
-            const tailVel = Math.min(pendingVel / 3.0, 1.0)
-            // Avoid long terminal spikes on fast lift.
-            if (tailVel < 0.55) {
-              const tailLen = Math.max(0.4, size * 0.32 * (0.35 + basePressure))
-              const steps = 2
-              let prev = { x: p2.x, y: p2.y }
-              for (let i = 1; i <= steps; i++) {
-                const t = i / steps
-                const pt = { x: p2.x + ux * tailLen * t, y: p2.y + uy * tailLen * t }
-                const pr = basePressure * (1 - t)
-                paintToBuffer(pendingBuf, prev, pt, color, size, pr, tailVel, strokeCalligraphy)
-                prev = pt
-              }
-            }
-          }
-        }
+        // Calligraphy taper handled naturally by pressure release — no artificial tail
 
         if (bufBrush === 'watercolor2' && strokeSimRef.current) {
           stepWatercolorSim(strokeSimRef.current, WC2_STEPS)
