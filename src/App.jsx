@@ -154,6 +154,13 @@ const COLORING_PAGES = [
   { id: 'mayan-symbol', label: 'Symbol', cat: 'Glyph', src: '/coloring-pages/mayan-symbol.png' },
   { id: 'mayan-numbers', label: 'Numbers 0-19', cat: 'Glyph', src: '/coloring-pages/mayan-numbers.png' },
   { id: 'mayan-hunab-ku', label: 'Hunab Ku', cat: 'Glyph', src: '/coloring-pages/mayan-hunab-ku.png' },
+  { id: 'zen-bamboo', label: 'Bamboo', cat: 'Zen', src: '/coloring-pages/zen-bamboo.png' },
+  { id: 'zen-peace', label: 'Peace', cat: 'Zen', src: '/coloring-pages/zen-peace.jpg' },
+  { id: 'zen-strength', label: 'Strength', cat: 'Zen', src: '/coloring-pages/zen-strength.jpg' },
+  { id: 'zen-lotus', label: 'Lotus', cat: 'Zen', src: '/coloring-pages/zen-lotus.png' },
+  { id: 'zen-bonsai', label: 'Bonsai', cat: 'Zen', src: '/coloring-pages/zen-bonsai.jpg' },
+  { id: 'zen-crane', label: 'Crane', cat: 'Zen', src: '/coloring-pages/zen-crane.jpg' },
+  { id: 'zen-great-wave', label: 'Great Wave', cat: 'Zen', src: '/coloring-pages/zen-great-wave.jpg' },
 ]
 
 // ─── PAPER TEXTURES ───
@@ -172,7 +179,7 @@ const PAPERS = [
 const BRUSHES = [
   { id: 'felt',        label: 'Felt Tip' },
   { id: 'watercolor',  label: 'Watercolor' },
-  { id: 'calligraphy', label: 'Calligraphy' },
+  { id: 'calligraphy', label: 'Ink Brush' },
   { id: 'pastel',      label: 'Soft Pastel' },
   { id: 'charcoal',    label: 'Charcoal' },
   { id: 'oil',         label: 'Oil Paint' },
@@ -194,9 +201,8 @@ const BRUSH_ICONS = {
   ),
   calligraphy: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M20 4L8.5 15.5"/>
-      <path d="M15.5 9.5l-3 3"/>
-      <path d="M8.5 15.5c-1 1-3.5 2.5-4.5 3.5 1-1 2-3 1-4l3-3 3.5 3.5z"/>
+      <path d="M12 3c0 0-1 6-2 10s-3 7-3 8c0 .5.5 1 1 1h4c.5 0 1-.5 1-1 0-1-2-4-3-8S12 3 12 3z"/>
+      <line x1="8" y1="22" x2="16" y2="22"/>
     </svg>
   ),
   pastel: (
@@ -486,36 +492,64 @@ function paintWetEdge(tiles, path, color, size, opacity) {
 }
 
 
-// Calligraphy: flat nib whose width depends on stroke direction vs. fixed nib angle
-const NIB_ANGLE = Math.PI * 0.25 // 45 degrees, classic italic
-
-function strokeCalligraphy(ctx, from, to, color, size, pressure) {
+// Calligraphy: Zen/Chinese pointed brush
+// Smooth line stroke with round caps. Width from pressure, velocity thins.
+// Dry brush = scattered dots at high speed. Ink bleed = rare soft edge dots.
+function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   ctx.save()
   ctx.globalCompositeOperation = 'source-over'
 
-  const dx = to.x - from.x
-  const dy = to.y - from.y
-  const strokeAngle = Math.atan2(dy, dx)
+  const vel = velocity || 0
+  const velFactor = Math.max(0.2, 1 - vel / 3000)
 
-  // Width = how perpendicular the stroke is to the nib angle
-  // Parallel to nib = thin hairline, perpendicular = full width
-  const angleDiff = strokeAngle - NIB_ANGLE
-  const nibWidth = size * (0.08 + Math.abs(Math.sin(angleDiff)) * 0.92) * (0.5 + pressure * 0.5)
+  // Line width: pressure-driven, velocity-thinned
+  const w = size * (0.15 + pressure * 0.85) * velFactor
 
-  // Nib perpendicular direction (fixed angle, not stroke-following)
-  const nibPerpX = -Math.sin(NIB_ANGLE)
-  const nibPerpY = Math.cos(NIB_ANGLE)
-
-  // Filled quad: nib shape stays at fixed angle
-  ctx.globalAlpha = 0.88 + pressure * 0.12
-  ctx.fillStyle = color
+  // Core stroke: single line with round caps for smooth anti-aliased edges
+  ctx.globalAlpha = 0.9 + pressure * 0.1
+  ctx.strokeStyle = color
+  ctx.lineWidth = Math.max(w, 0.8)
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
   ctx.beginPath()
-  ctx.moveTo(from.x + nibPerpX * nibWidth * 0.5, from.y + nibPerpY * nibWidth * 0.5)
-  ctx.lineTo(to.x + nibPerpX * nibWidth * 0.5, to.y + nibPerpY * nibWidth * 0.5)
-  ctx.lineTo(to.x - nibPerpX * nibWidth * 0.5, to.y - nibPerpY * nibWidth * 0.5)
-  ctx.lineTo(from.x - nibPerpX * nibWidth * 0.5, from.y - nibPerpY * nibWidth * 0.5)
-  ctx.closePath()
-  ctx.fill()
+  ctx.moveTo(from.x, from.y)
+  ctx.lineTo(to.x, to.y)
+  ctx.stroke()
+
+  // Dry brush: scatter ink fragments at very high speed + low pressure
+  const dryChance = (vel / 4000) * (1 - pressure) * 0.5
+  if (dryChance > 0.05 && w > 2) {
+    const dx = to.x - from.x
+    const dy = to.y - from.y
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1
+    const angle = Math.atan2(dy, dx)
+    const perpX = -Math.sin(angle)
+    const perpY = Math.cos(angle)
+    const fragments = Math.floor(dist * dryChance * 0.3)
+    ctx.fillStyle = color
+    for (let f = 0; f < fragments; f++) {
+      const t = Math.random()
+      const fx = from.x + dx * t + perpX * (Math.random() - 0.5) * w * 1.3
+      const fy = from.y + dy * t + perpY * (Math.random() - 0.5) * w * 1.3
+      ctx.globalAlpha = 0.3 + Math.random() * 0.4
+      ctx.beginPath()
+      ctx.arc(fx, fy, 0.3 + Math.random() * 0.8, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+
+  // Rare ink bleed at edges: slow + heavy strokes only
+  if (vel < 400 && pressure > 0.5 && w > 6 && Math.random() < 0.08) {
+    const mx = (from.x + to.x) * 0.5
+    const my = (from.y + to.y) * 0.5
+    const angle = Math.random() * Math.PI * 2
+    const bleedDist = w * 0.5 * (0.9 + Math.random() * 0.3)
+    ctx.fillStyle = color
+    ctx.globalAlpha = 0.06 + Math.random() * 0.06
+    ctx.beginPath()
+    ctx.arc(mx + Math.cos(angle) * bleedDist, my + Math.sin(angle) * bleedDist, 0.5 + Math.random() * 1, 0, Math.PI * 2)
+    ctx.fill()
+  }
 
   ctx.restore()
 }
@@ -923,6 +957,7 @@ const STROKE_FN = {
 const TILE_SIZE = 2048
 const WC_COMPOSITE_ALPHA = 0.18
 const OIL_COMPOSITE_ALPHA = 0.88
+const INK_COMPOSITE_ALPHA = 1.0
 const MIN_ZOOM = 0.15
 const MAX_ZOOM = 4
 const TOOLBAR_HIDE_DELAY = 2500
@@ -967,8 +1002,9 @@ function paintToTiles(tiles, from, to, brush, color, size, pressure, opacity, ve
   }
 }
 
-// Paint watercolor to stroke buffer at elevated opacity (composited at fixed alpha on pen-up)
-function paintToBuffer(bufferTiles, from, to, color, size, pressure, velocity) {
+// Paint to stroke buffer using given stroke function (composited at fixed alpha on pen-up)
+function paintToBuffer(bufferTiles, from, to, color, size, pressure, velocity, strokeFn) {
+  const fn = strokeFn || strokeWatercolor
   const pad = size * 3
   const minX = Math.min(from.x, to.x) - pad
   const maxX = Math.max(from.x, to.x) + pad
@@ -987,7 +1023,7 @@ function paintToBuffer(bufferTiles, from, to, color, size, pressure, velocity) {
       const ctx = tile.getContext('2d')
       ctx.save()
       ctx.translate(-tx * TILE_SIZE, -ty * TILE_SIZE)
-      strokeWatercolor(ctx, from, to, color, size, pressure, velocity)
+      fn(ctx, from, to, color, size, pressure, velocity)
       ctx.restore()
     }
   }
@@ -1345,6 +1381,8 @@ export default function MorningPaint() {
       const sw = pos.w * v.zoom
       const sh = pos.h * v.zoom
       ctx.globalAlpha = bgOpacity / 100
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
       ctx.drawImage(bgImageRef.current, sx, sy, sw, sh)
       ctx.restore()
     }
@@ -1374,7 +1412,7 @@ export default function MorningPaint() {
     // Live preview of stroke buffer (shown at target composite alpha)
     const sBuf = strokeBufRef.current
     if (sBuf && sBuf.size > 0) {
-      const previewAlpha = strokeBufBrushRef.current === 'oil' ? OIL_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
+      const previewAlpha = strokeBufBrushRef.current === 'oil' ? OIL_COMPOSITE_ALPHA : strokeBufBrushRef.current === 'calligraphy' ? INK_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
       ctx.save()
       ctx.globalAlpha = previewAlpha
       sBuf.forEach((bufTile, key) => {
@@ -1429,11 +1467,11 @@ export default function MorningPaint() {
       lastPressureRef.current = smoothed
       return smoothed
     }
-    if (!from || !to) return 0.7
+    if (!from || !to) return 0.35
     const dx = to.x - from.x
     const dy = to.y - from.y
     const speed = Math.sqrt(dx * dx + dy * dy)
-    const simulated = Math.max(0.2, Math.min(1, 1 - speed / 200))
+    const simulated = Math.max(0.15, Math.min(0.5, 0.5 - speed / 300))
     lastPressureRef.current = simulated
     return simulated
   }, [])
@@ -1507,7 +1545,7 @@ export default function MorningPaint() {
 
     // Initialize stroke buffer for brushes that use buffered compositing
     const b = brushRef.current
-    if (b === 'watercolor' || b === 'oil') {
+    if (b === 'watercolor' || b === 'oil' || b === 'calligraphy') {
       strokeBufRef.current = new Map()
       strokeBufBrushRef.current = b
     }
@@ -1584,6 +1622,8 @@ export default function MorningPaint() {
       if (useBuffer) {
         if (curBrush === 'oil') {
           paintOilToBuffer(strokeBufRef.current, tilesRef.current, from, to, color, size, pr, vel)
+        } else if (curBrush === 'calligraphy') {
+          paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeCalligraphy)
         } else {
           paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel)
         }
@@ -1626,7 +1666,7 @@ export default function MorningPaint() {
     // Composite stroke buffer onto tiles
     if (wasDrawing && strokeBufRef.current && strokeBufRef.current.size > 0) {
       const bufBrush = strokeBufBrushRef.current
-      const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
+      const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA : bufBrush === 'calligraphy' ? INK_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
       compositeBuffer(strokeBufRef.current, tilesRef.current, alpha)
       strokeBufRef.current = null
       strokeBufBrushRef.current = null
@@ -1740,7 +1780,7 @@ export default function MorningPaint() {
         const vpH = canvas.height / dpr / v.zoom
         const maxW = vpW * 0.8
         const maxH = vpH * 0.8
-        const scale = Math.min(maxW / img.width, maxH / img.height, 1)
+        const scale = Math.min(maxW / img.width, maxH / img.height)
         const w = img.width * scale
         const h = img.height * scale
         bgImagePosRef.current = {
@@ -1775,7 +1815,7 @@ export default function MorningPaint() {
       const vpH = canvas.height / dpr / v.zoom
       const maxW = vpW * 0.8
       const maxH = vpH * 0.8
-      const scale = Math.min(maxW / img.width, maxH / img.height, 1)
+      const scale = Math.min(maxW / img.width, maxH / img.height)
       const w = img.width * scale
       const h = img.height * scale
       bgImagePosRef.current = {
