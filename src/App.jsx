@@ -563,17 +563,18 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const vel = Math.max(0, Math.min(velocity ?? 0, 1))
   const pr = Math.max(0.0, Math.min(pressure ?? 0.5, 1))
 
-  // Width: pressure is primary driver, velocity thins the stroke
-  const velFactor = Math.max(0.35, 1 - vel * 0.6)
-  const wBase = size * (0.18 + pr * 0.72)
-  const w = Math.max(size * 0.03, wBase * velFactor)
-  const minMinor = Math.max(size * 0.06, w * 0.18)
+  // Width: pressure is primary driver with steep curve for dramatic thick-thin.
+  // Real brush: hairline at light touch, very fat at full press (~8:1 ratio).
+  const prCurve = Math.pow(pr, 1.8)
+  const velFactor = Math.max(0.2, 1 - vel * 0.75)
+  const wBase = size * (0.04 + prCurve * 0.96)
+  const w = Math.max(size * 0.02, wBase * velFactor)
+  const minMinor = Math.max(size * 0.04, w * 0.18)
 
-  // Pressure→opacity: light touch = grey wash, full press = solid black
-  // Coupled with pressure^0.6 curve so light strokes fade more aggressively
-  const pressureAlpha = Math.pow(pr, 0.75)
-  const speedAlpha = 1 - vel * 0.25
-  ctx.globalAlpha = (0.2 + pressureAlpha * 0.8) * speedAlpha
+  // Pressure→opacity: light touch = grey wash, heavy = near-solid
+  const pressureAlpha = Math.pow(pr, 0.6)
+  const speedAlpha = 1 - vel * 0.2
+  ctx.globalAlpha = (0.3 + pressureAlpha * 0.7) * speedAlpha
   ctx.fillStyle = color
 
   // Directional stamping along the segment for a brush-like footprint
