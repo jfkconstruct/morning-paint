@@ -1203,6 +1203,8 @@ export default function MorningPaint() {
   // Toolbar auto-hide
   const hideTimerRef = useRef(null)
   const [toolbarVisible, setToolbarVisible] = useState(true)
+  const [toolbarLocked, setToolbarLocked] = useState(false)
+  const [showLabels, setShowLabels] = useState(false)
   const toolbarHoveredRef = useRef(false)
 
   // Tool state
@@ -1447,12 +1449,12 @@ export default function MorningPaint() {
   }, [])
 
   const scheduleHideToolbar = useCallback(() => {
-    if (toolbarHoveredRef.current) return
+    if (toolbarLocked || toolbarHoveredRef.current) return
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
     hideTimerRef.current = setTimeout(() => {
-      if (!toolbarHoveredRef.current) setToolbarVisible(false)
+      if (!toolbarHoveredRef.current && !toolbarLocked) setToolbarVisible(false)
     }, TOOLBAR_HIDE_DELAY)
-  }, [])
+  }, [toolbarLocked])
 
   // ─── POINTER HANDLERS ───
   const getScreenPos = (e) => {
@@ -1865,28 +1867,29 @@ export default function MorningPaint() {
 
   // ─── STYLES ───
   const segBtn = (id) => ({
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    width: 40, height: 36, borderRadius: 8, cursor: 'pointer', border: 'none',
+    display: 'flex', flexDirection: showLabels ? 'column' : 'row',
+    alignItems: 'center', justifyContent: 'center',
+    width: showLabels ? 56 : 52, height: showLabels ? 56 : 46, borderRadius: 10, cursor: 'pointer', border: 'none',
     background: brush === id ? C.active : 'transparent',
     color: brush === id ? C.accent : C.dim,
-    transition: 'all 0.2s ease',
+    transition: 'all 0.2s ease', gap: 2, padding: 0,
   })
 
   const iconBtn = (disabled) => ({
-    width: 36, height: 36, borderRadius: 8, border: 'none',
+    width: 46, height: 46, borderRadius: 10, border: 'none',
     background: 'transparent', cursor: disabled ? 'default' : 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     color: disabled ? '#D2D2D7' : C.dim, transition: 'color 0.2s ease',
   })
 
   const toolbarPill = {
-    display: 'flex', alignItems: 'center', gap: 2,
-    padding: '6px 8px', borderRadius: 14,
+    display: 'flex', alignItems: 'center', gap: 3,
+    padding: '8px 10px', borderRadius: 16,
     background: C.toolbar, backdropFilter: 'blur(40px)', WebkitBackdropFilter: 'blur(40px)',
     boxShadow: '0 2px 20px rgba(0,0,0,0.08), 0 0 0 0.5px rgba(0,0,0,0.06)',
   }
 
-  const sep = <div style={{ width: 1, height: 24, background: C.sep, flexShrink: 0, margin: '0 4px' }} />
+  const sep = <div style={{ width: 1, height: 32, background: C.sep, flexShrink: 0, margin: '0 5px' }} />
 
   return (
     <div style={{
@@ -2107,7 +2110,10 @@ export default function MorningPaint() {
             }}>
               {BRUSHES.map(b => (
                 <button key={b.id} onClick={() => selectBrush(b.id)} style={segBtn(b.id)} title={b.label}>
-                  {BRUSH_ICONS[b.id]}
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24 }}>
+                    {BRUSH_ICONS[b.id]}
+                  </span>
+                  {showLabels && <span style={{ fontSize: 8, fontWeight: 600, letterSpacing: '0.02em', lineHeight: 1, color: 'inherit', whiteSpace: 'nowrap' }}>{b.label}</span>}
                 </button>
               ))}
             </div>
@@ -2116,7 +2122,7 @@ export default function MorningPaint() {
 
             {/* Size */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <div style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <div style={{
                   width: Math.max(size * 0.4, 3), height: Math.max(size * 0.4, 3),
                   borderRadius: '50%', background: (brush === 'eraser' || brush === 'smudge') ? C.dim : color,
@@ -2148,7 +2154,7 @@ export default function MorningPaint() {
               <button
                 onClick={() => { setShowPalette(!showPalette); setShowPaperMenu(false) }}
                 style={{
-                  width: 28, height: 28, borderRadius: '50%', cursor: 'pointer', flexShrink: 0,
+                  width: 36, height: 36, borderRadius: '50%', cursor: 'pointer', flexShrink: 0,
                   background: color,
                   border: showPalette ? `2px solid ${C.accent}` : '2px solid rgba(0,0,0,0.08)',
                   boxShadow: '0 1px 3px rgba(0,0,0,0.06)', transition: 'all 0.2s',
@@ -2172,6 +2178,34 @@ export default function MorningPaint() {
                 <path d="m6 6 12 12"/>
               </svg>
             </button>
+
+            {sep}
+
+            {/* Pin toolbar (keep visible) */}
+            <button onClick={() => {
+              const next = !toolbarLocked
+              setToolbarLocked(next)
+              if (next) { showToolbar(); if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null } }
+              else { setShowLabels(false); scheduleHideToolbar() }
+            }} style={{ ...iconBtn(false), color: toolbarLocked ? C.accent : C.dim }} title={toolbarLocked ? 'Unlock toolbar' : 'Lock toolbar'}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill={toolbarLocked ? C.accent : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                {toolbarLocked
+                  ? <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>
+                  : <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></>
+                }
+              </svg>
+            </button>
+
+            {/* Show labels (only when locked) */}
+            {toolbarLocked && (
+              <button onClick={() => setShowLabels(v => !v)} style={{ ...iconBtn(false), color: showLabels ? C.accent : C.dim }} title={showLabels ? 'Hide labels' : 'Show labels'}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="4 7 4 4 20 4 20 7"/>
+                  <line x1="9" y1="20" x2="15" y2="20"/>
+                  <line x1="12" y1="4" x2="12" y2="20"/>
+                </svg>
+              </button>
+            )}
           </div>
 
           {/* ─── FLOATING PALETTE ─── */}
