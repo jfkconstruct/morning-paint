@@ -552,13 +552,13 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
 
   // Width: pressure is primary driver, velocity thins the stroke
   const velFactor = Math.max(0.35, 1 - vel * 0.6)
-  const wBase = size * (0.04 + pr * 0.96)
+  const wBase = size * (0.18 + pr * 0.72)
   const w = Math.max(size * 0.03, wBase * velFactor)
   const minMinor = Math.max(size * 0.06, w * 0.18)
 
   // Pressure→opacity: light touch = grey wash, full press = solid black
   // Coupled with pressure^0.6 curve so light strokes fade more aggressively
-  const pressureAlpha = Math.pow(pr, 0.6)
+  const pressureAlpha = Math.pow(pr, 0.75)
   const speedAlpha = 1 - vel * 0.25
   ctx.globalAlpha = (0.2 + pressureAlpha * 0.8) * speedAlpha
   ctx.fillStyle = color
@@ -625,20 +625,20 @@ function strokeInkWash(ctx, from, to, color, size, pressure, velocity) {
   const dist = Math.sqrt(dx * dx + dy * dy)
   if (dist < 0.2) { ctx.restore(); return }
 
-  const vel = velocity ?? 1.0
-  const velFactor = Math.max(0.5, 1 - vel / 5000)
+  const vel = Math.max(0, Math.min(velocity ?? 1.0, 1))
+  const velFactor = Math.max(0.55, 1 - vel * 0.45)
+  const pr = 0.22 + pressure * 0.68
 
   // Monochrome: extract luminance from chosen color
   const rgb = hexToRgb(color)
   const lum = Math.round(rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114)
 
   // Core width: wider than ink brush, pressure-driven
-  const coreW = size * (0.4 + pressure * 0.6) * velFactor * 2.5
-  const segDist = dist
-  const lineW = Math.max(coreW, segDist * 0.8, size * 0.3)
+  const coreW = size * (0.4 + pr * 0.6) * velFactor * 2.5
+  const lineW = Math.max(coreW, size * 0.3)
 
   // Pressure→opacity for core: softer than ink brush
-  const pressureAlpha = Math.pow(pressure, 0.5)
+  const pressureAlpha = Math.pow(pr, 0.6)
   const coreAlpha = 0.15 + pressureAlpha * 0.55
 
   // Layer 1: Soft halo (wide, faint stroke underneath for diffusion edge)
@@ -670,7 +670,7 @@ function strokeInkWash(ctx, from, to, color, size, pressure, velocity) {
   ctx.stroke()
 
   // Ink granulation along the stroke path (subtle paper texture)
-  if (dist > 3 && pressure > 0.25) {
+  if (dist > 3 && pr > 0.25) {
     const spread = lineW * 0.6
     const grainCount = Math.ceil(dist / 4)
     const darkLum = Math.max(0, lum - 25)
@@ -684,7 +684,7 @@ function strokeInkWash(ctx, from, to, color, size, pressure, velocity) {
       const py = from.y + dy * t + perpY * (Math.random() - 0.5) * spread
       const pGrain = sampleGrain(px, py)
       if (pGrain < 0.45) continue
-      ctx.globalAlpha = (0.04 + pressure * 0.08) * pGrain
+      ctx.globalAlpha = (0.04 + pr * 0.08) * pGrain
       ctx.beginPath()
       ctx.arc(px, py, 0.3 + Math.random() * size * 0.04, 0, Math.PI * 2)
       ctx.fill()
@@ -1780,6 +1780,7 @@ export default function MorningPaint() {
   const historyRef = useRef([])
   const rafRef = useRef(null)
   const lastPressureRef = useRef(0.5)
+  const paintPressureRef = useRef(0.5)
   const pointerTypeRef = useRef('mouse')
 
   // Adaptive EMA smoothing: fast strokes = minimal smoothing, slow = heavy
@@ -1811,8 +1812,8 @@ export default function MorningPaint() {
     // Watercolor gets extra smoothing for that flowing, liquid feel
     const isWatercolor = brushRef.current === 'watercolor' || brushRef.current === 'watercolor2'
     const isPen = pointerTypeRef.current === 'pen'
-    const minAlpha = isWatercolor ? 0.2 : (isPen ? 0.32 : 0.4)
-    const maxAlpha = isWatercolor ? 0.7 : (isPen ? 0.82 : 0.9)
+    const minAlpha = isWatercolor ? 0.2 : (isPen ? 0.28 : 0.4)
+    const maxAlpha = isWatercolor ? 0.7 : (isPen ? 0.72 : 0.9)
     const velocityThreshold = 3.0
     const alpha = minAlpha + Math.min(velocityRef.current / velocityThreshold, 1.0) * (maxAlpha - minAlpha)
 
@@ -2154,16 +2155,19 @@ export default function MorningPaint() {
   }
 
   const getPointerPressure = useCallback((e, from, to) => {
-    if (e.pointerType === 'pen' && e.pressure > 0) {
-      const mapped = clamp01(Math.pow(mapPressure(e.pressure), 0.82))
-      // Felt should be steadier (less jagged pressure wobble)
-      const emaIn = brushRef.current === 'felt' ? 0.18 : 0.28
-      let smoothed = lastPressureRef.current * (1 - emaIn) + mapped * emaIn
-      const delta = smoothed - lastPressureRef.current
-      const maxStep = brushRef.current === 'felt' ? 0.035 : 0.055
-      if (Math.abs(delta) > maxStep) smoothed = lastPressureRef.current + Math.sign(delta) * maxStep
-      lastPressureRef.current = smoothed
-      return smoothed
+    if (e.pointerType === 'pen') {
+      if (e.pressure > 0) {
+        const mapped = clamp01(Math.pow(mapPressure(e.pressure), 0.9))
+        // Felt should be steadier (less jagged pressure wobble)
+        const emaIn = brushRef.current === 'felt' ? 0.14 : 0.2
+        let smoothed = lastPressureRef.current * (1 - emaIn) + mapped * emaIn
+        const delta = smoothed - lastPressureRef.current
+        const maxStep = brushRef.current === 'felt' ? 0.028 : 0.04
+        if (Math.abs(delta) > maxStep) smoothed = lastPressureRef.current + Math.sign(delta) * maxStep
+        lastPressureRef.current = smoothed
+      }
+      // Pencil can intermittently report 0 pressure; keep last stable value.
+      return lastPressureRef.current
     }
     if (!from || !to) return 0.2
     const dx = to.x - from.x
@@ -2219,6 +2223,7 @@ export default function MorningPaint() {
     } else {
       lastPressureRef.current = 0.2
     }
+    paintPressureRef.current = lastPressureRef.current
     emaRef.current = { x: 0, y: 0, vx: 0, vy: 0, lastTime: 0 }
     splineBufferRef.current = []
     velocityRef.current = 0
@@ -2343,7 +2348,16 @@ export default function MorningPaint() {
     for (const ev of drawEvents) {
       const sp = getScreenPos(ev)
       const rawWp = screenToWorld(sp.x, sp.y)
-      const pressure = getPointerPressure(ev, lastPosRef.current, rawWp)
+      const rawPressure = getPointerPressure(ev, lastPosRef.current, rawWp)
+      const isPen = pointerTypeRef.current === 'pen'
+      const emaIn = isPen ? 0.12 : 0.3
+      let pressure = paintPressureRef.current * (1 - emaIn) + rawPressure * emaIn
+      const maxStep = isPen ? 0.018 : 0.05
+      const delta = pressure - paintPressureRef.current
+      if (Math.abs(delta) > maxStep) pressure = paintPressureRef.current + Math.sign(delta) * maxStep
+      if (isPen && Math.abs(delta) < 0.008) pressure = paintPressureRef.current
+      if (isPen) pressure = 0.08 + pressure * 0.28
+      paintPressureRef.current = pressure
       const wp = smoothPoint(rawWp, pressure)
       const vel = Math.min(velocityRef.current / 3.0, 1.0)
 
@@ -2382,7 +2396,9 @@ export default function MorningPaint() {
         const p2 = buf[buf.length - 2]
         const p3 = buf[buf.length - 1]
         const segDist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
-        const splineSegs = Math.max(6, Math.min(16, Math.ceil(segDist / 2)))
+        const maxSegs = isPen ? 24 : 16
+        const minSegs = isPen ? 8 : 6
+        const splineSegs = Math.max(minSegs, Math.min(maxSegs, Math.ceil(segDist / (isPen ? 1.6 : 2))))
         const splinePoints = catmullRomSegment(p0, p1, p2, p3, splineSegs)
         for (let i = 1; i < splinePoints.length; i++) {
           paintSeg(splinePoints[i - 1], splinePoints[i], splinePoints[i].pressure)
