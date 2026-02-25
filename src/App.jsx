@@ -2376,7 +2376,7 @@ export default function MorningPaint() {
       const delta = pressure - paintPressureRef.current
       if (Math.abs(delta) > maxStep) pressure = paintPressureRef.current + Math.sign(delta) * maxStep
       if (isPen && Math.abs(delta) < 0.008) pressure = paintPressureRef.current
-      if (isPen) pressure = 0.08 + pressure * 0.28
+      if (isPen && curBrush !== 'calligraphy') pressure = 0.08 + pressure * 0.28
       paintPressureRef.current = pressure
       const wp = smoothPoint(rawWp, pressure)
       const vel = Math.min(velocityRef.current / 3.0, 1.0)
