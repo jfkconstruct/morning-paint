@@ -510,41 +510,54 @@ function paintWetEdge(tiles, path, color, size, opacity) {
 
 
 // Calligraphy: Zen/Chinese pointed brush
-// Smooth line stroke with round caps. Width from pressure, velocity thins.
+// Directional brush stamp with tapered feel. Width from pressure, velocity thins/elongates.
 // Pressure controls both width AND opacity: light = grey wash, heavy = solid black.
 // Dry brush = scattered dots at high speed. Ink bleed = rare soft edge dots.
 function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   ctx.save()
   ctx.globalCompositeOperation = 'source-over'
 
-  const vel = velocity || 0
-
-  // Width: pressure is primary driver, velocity provides subtle thinning
-  // Floor at 0.6 prevents thin segments from separating into dots
-  const velFactor = Math.max(0.6, 1 - vel / 5000)
-  const w = size * (0.2 + pressure * 0.8) * velFactor
-
-  // Ensure segment overlap: line width must exceed the gap between spline points
   const dx = to.x - from.x
   const dy = to.y - from.y
-  const segDist = Math.sqrt(dx * dx + dy * dy)
-  const lineW = Math.max(w, segDist * 0.8, size * 0.15)
+  const dist = Math.sqrt(dx * dx + dy * dy)
+  if (dist < 0.01) { ctx.restore(); return }
+
+  const vel = Math.max(0, Math.min(velocity ?? 0, 1))
+  const pr = Math.max(0.0, Math.min(pressure ?? 0.5, 1))
+
+  // Width: pressure is primary driver, velocity thins the stroke
+  const velFactor = Math.max(0.35, 1 - vel * 0.6)
+  const wBase = size * (0.04 + pr * 0.96)
+  const w = Math.max(size * 0.03, wBase * velFactor)
 
   // Pressure→opacity: light touch = grey wash, full press = solid black
   // Coupled with pressure^0.6 curve so light strokes fade more aggressively
-  const pressureAlpha = Math.pow(pressure, 0.6)
-  ctx.globalAlpha = 0.25 + pressureAlpha * 0.75
-  ctx.strokeStyle = color
-  ctx.lineWidth = lineW
-  ctx.lineCap = 'round'
-  ctx.lineJoin = 'round'
-  ctx.beginPath()
-  ctx.moveTo(from.x, from.y)
-  ctx.lineTo(to.x, to.y)
-  ctx.stroke()
+  const pressureAlpha = Math.pow(pr, 0.6)
+  const speedAlpha = 1 - vel * 0.25
+  ctx.globalAlpha = (0.2 + pressureAlpha * 0.8) * speedAlpha
+  ctx.fillStyle = color
+
+  // Directional stamping along the segment for a brush-like footprint
+  const angle = Math.atan2(dy, dx)
+  const step = Math.max(0.35, w * 0.35)
+  const steps = Math.max(1, Math.ceil(dist / step))
+  const major = w * (1.2 + vel * 0.9)
+  const minor = w
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const px = from.x + dx * t
+    const py = from.y + dy * t
+    ctx.save()
+    ctx.translate(px, py)
+    ctx.rotate(angle)
+    ctx.beginPath()
+    ctx.ellipse(0, 0, major * 0.5, minor * 0.5, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+  }
 
   // Rare ink bleed at edges: slow + heavy strokes only
-  if (vel < 0.15 && pressure > 0.5 && w > 6 && Math.random() < 0.08) {
+  if (vel < 0.15 && pr > 0.5 && w > 6 && Math.random() < 0.08) {
     const mx = (from.x + to.x) * 0.5
     const my = (from.y + to.y) * 0.5
     const angle = Math.random() * Math.PI * 2
@@ -2057,6 +2070,35 @@ export default function MorningPaint() {
     // Composite stroke buffer onto tiles
     if (wasDrawing && strokeBufRef.current && strokeBufRef.current.size > 0) {
       const bufBrush = strokeBufBrushRef.current
+
+      // Calligraphy: add a short tapered tail on lift for a pointed finish
+      if (bufBrush === 'calligraphy') {
+        const buf = splineBufferRef.current
+        if (buf.length >= 2) {
+          const p2 = buf[buf.length - 1]
+          const p1 = buf[buf.length - 2]
+          const dx = p2.x - p1.x
+          const dy = p2.y - p1.y
+          const dist = Math.sqrt(dx * dx + dy * dy)
+          if (dist > 0.01) {
+            const ux = dx / dist
+            const uy = dy / dist
+            const tailLen = Math.max(1, size * 0.9)
+            const steps = 4
+            const basePressure = p2.pressure ?? 0.5
+            const tailVel = Math.min(velocityRef.current / 3.0, 1.0)
+            let prev = { x: p2.x, y: p2.y }
+            for (let i = 1; i <= steps; i++) {
+              const t = i / steps
+              const pt = { x: p2.x + ux * tailLen * t, y: p2.y + uy * tailLen * t }
+              const pr = basePressure * (1 - t)
+              paintToBuffer(strokeBufRef.current, prev, pt, color, size, pr, tailVel, strokeCalligraphy)
+              prev = pt
+            }
+          }
+        }
+      }
+
       const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA : bufBrush === 'calligraphy' ? INK_COMPOSITE_ALPHA : bufBrush === 'inkwash' ? INKWASH_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
       compositeBuffer(strokeBufRef.current, tilesRef.current, alpha)
       strokeBufRef.current = null
