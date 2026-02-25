@@ -180,6 +180,7 @@ const BRUSHES = [
   { id: 'felt',        label: 'Felt Tip' },
   { id: 'watercolor',  label: 'Watercolor' },
   { id: 'calligraphy', label: 'Ink Brush' },
+  { id: 'inkwash',     label: 'Ink Wash' },
   { id: 'pastel',      label: 'Soft Pastel' },
   { id: 'charcoal',    label: 'Charcoal' },
   { id: 'oil',         label: 'Oil Paint' },
@@ -203,6 +204,13 @@ const BRUSH_ICONS = {
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3c0 0-1 6-2 10s-3 7-3 8c0 .5.5 1 1 1h4c.5 0 1-.5 1-1 0-1-2-4-3-8S12 3 12 3z"/>
       <line x1="8" y1="22" x2="16" y2="22"/>
+    </svg>
+  ),
+  inkwash: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="8" opacity="0.3" fill="currentColor" stroke="none"/>
+      <circle cx="12" cy="12" r="5" opacity="0.5" fill="currentColor" stroke="none"/>
+      <circle cx="12" cy="12" r="2.5" opacity="0.8" fill="currentColor" stroke="none"/>
     </svg>
   ),
   pastel: (
@@ -494,6 +502,7 @@ function paintWetEdge(tiles, path, color, size, opacity) {
 
 // Calligraphy: Zen/Chinese pointed brush
 // Smooth line stroke with round caps. Width from pressure, velocity thins.
+// Pressure controls both width AND opacity: light = grey wash, heavy = solid black.
 // Dry brush = scattered dots at high speed. Ink bleed = rare soft edge dots.
 function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   ctx.save()
@@ -505,8 +514,8 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   // Line width: pressure-driven, velocity-thinned
   const w = size * (0.15 + pressure * 0.85) * velFactor
 
-  // Core stroke: single line with round caps for smooth anti-aliased edges
-  ctx.globalAlpha = 0.9 + pressure * 0.1
+  // Pressure→opacity: light touch = translucent grey (0.25), full press = solid black (1.0)
+  ctx.globalAlpha = 0.25 + pressure * 0.75
   ctx.strokeStyle = color
   ctx.lineWidth = Math.max(w, 0.8)
   ctx.lineCap = 'round'
@@ -549,6 +558,101 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
     ctx.beginPath()
     ctx.arc(mx + Math.cos(angle) * bleedDist, my + Math.sin(angle) * bleedDist, 0.5 + Math.random() * 1, 0, Math.PI * 2)
     ctx.fill()
+  }
+
+  ctx.restore()
+}
+
+// Ink Wash: sumi-e diffusion brush
+// Watercolor-style radial gradient blobs, always in grey/black tones.
+// Pressure controls opacity: light = smoky mist, heavy = dark pooling.
+// Wider, softer spread than watercolor. Meant for washes, not line work.
+function strokeInkWash(ctx, from, to, color, size, pressure, velocity) {
+  ctx.save()
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const dist = Math.sqrt(dx * dx + dy * dy)
+
+  if (dist < 0.2) { ctx.restore(); return }
+
+  const vel = velocity ?? 1.0
+  const speedFactor = Math.max(0.5, Math.min(1.0, 1.2 - vel * 0.4))
+
+  // Ink wash uses wider, softer spread than regular watercolor
+  const w = size * (1.0 + pressure * 0.6)
+  const stepSize = Math.max(size * 0.25, 3)
+  const steps = Math.max(Math.floor(dist / stepSize), 1)
+  const jitter = w * 0.4
+
+  // Force monochrome: extract luminance from chosen color, map to grey
+  const rgb = hexToRgb(color)
+  const lum = Math.round(rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114)
+  const ir = lum, ig = lum, ib = lum
+
+  ctx.globalCompositeOperation = 'source-over'
+
+  // Pressure→alpha: light = barely visible mist (0.03), heavy = dense pool (0.14)
+  const baseAlpha = (0.03 + pressure * 0.11) * speedFactor
+
+  // Main wash body: soft radial gradient blobs
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const x = from.x + dx * t + (Math.random() - 0.5) * jitter
+    const y = from.y + dy * t + (Math.random() - 0.5) * jitter
+    const grain = sampleGrain(x, y)
+    const grainMod = 0.6 + grain * 0.8
+
+    const r = w * (0.8 + Math.random() * 0.6)
+    const outerR = r * 1.5
+    const a = baseAlpha * grainMod
+
+    const g = ctx.createRadialGradient(x, y, r * 0.05, x, y, outerR)
+    g.addColorStop(0,   `rgba(${ir},${ig},${ib},${a})`)
+    g.addColorStop(0.3, `rgba(${ir},${ig},${ib},${a * 0.7})`)
+    g.addColorStop(0.6, `rgba(${ir},${ig},${ib},${a * 0.35})`)
+    g.addColorStop(1,   `rgba(${ir},${ig},${ib},0)`)
+    ctx.fillStyle = g
+    ctx.beginPath()
+    blobPath(ctx, x, y, outerR)
+    ctx.fill()
+  }
+
+  // Diffusion haze: extra-wide, very faint blobs that bleed outward
+  if (dist > 3) {
+    const hazeCount = Math.ceil(dist / (size * 2))
+    for (let i = 0; i < hazeCount; i++) {
+      const t = Math.random()
+      const hx = from.x + dx * t + (Math.random() - 0.5) * w * 1.2
+      const hy = from.y + dy * t + (Math.random() - 0.5) * w * 1.2
+      const hr = w * (1.2 + Math.random() * 1.0)
+      const ha = (0.01 + pressure * 0.03) * speedFactor * (0.4 + sampleGrain(hx, hy) * 0.6)
+      const g = ctx.createRadialGradient(hx, hy, hr * 0.05, hx, hy, hr)
+      g.addColorStop(0,   `rgba(${ir},${ig},${ib},${ha})`)
+      g.addColorStop(0.5, `rgba(${ir},${ig},${ib},${ha * 0.3})`)
+      g.addColorStop(1,   `rgba(${ir},${ig},${ib},0)`)
+      ctx.fillStyle = g
+      ctx.beginPath()
+      blobPath(ctx, hx, hy, hr)
+      ctx.fill()
+    }
+  }
+
+  // Ink granulation in paper valleys (darker specks where ink settles)
+  if (dist > 4 && pressure > 0.3) {
+    const spread = w * 0.7
+    for (let i = 0; i < Math.ceil(dist / 5); i++) {
+      const t = Math.random()
+      const px = from.x + dx * t + (Math.random() - 0.5) * spread
+      const py = from.y + dy * t + (Math.random() - 0.5) * spread
+      const pGrain = sampleGrain(px, py)
+      if (pGrain < 0.45) continue
+      const darkLum = Math.max(0, lum - 30)
+      ctx.globalAlpha = (0.06 + pressure * 0.1) * pGrain * speedFactor
+      ctx.fillStyle = `rgb(${darkLum},${darkLum},${darkLum})`
+      ctx.beginPath()
+      ctx.arc(px, py, 0.4 + Math.random() * size * 0.05, 0, Math.PI * 2)
+      ctx.fill()
+    }
   }
 
   ctx.restore()
@@ -946,6 +1050,7 @@ const STROKE_FN = {
   felt: strokeFelt,
   watercolor: strokeWatercolor,
   calligraphy: strokeCalligraphy,
+  inkwash: strokeInkWash,
   pastel: strokePastel,
   charcoal: strokeCharcoal,
   oil: strokeOil,
@@ -958,6 +1063,7 @@ const TILE_SIZE = 2048
 const WC_COMPOSITE_ALPHA = 0.18
 const OIL_COMPOSITE_ALPHA = 0.88
 const INK_COMPOSITE_ALPHA = 1.0
+const INKWASH_COMPOSITE_ALPHA = 0.22
 const MIN_ZOOM = 0.15
 const MAX_ZOOM = 4
 const TOOLBAR_HIDE_DELAY = 2500
@@ -1414,7 +1520,7 @@ export default function MorningPaint() {
     // Live preview of stroke buffer (shown at target composite alpha)
     const sBuf = strokeBufRef.current
     if (sBuf && sBuf.size > 0) {
-      const previewAlpha = strokeBufBrushRef.current === 'oil' ? OIL_COMPOSITE_ALPHA : strokeBufBrushRef.current === 'calligraphy' ? INK_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
+      const previewAlpha = strokeBufBrushRef.current === 'oil' ? OIL_COMPOSITE_ALPHA : strokeBufBrushRef.current === 'calligraphy' ? INK_COMPOSITE_ALPHA : strokeBufBrushRef.current === 'inkwash' ? INKWASH_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
       ctx.save()
       ctx.globalAlpha = previewAlpha
       sBuf.forEach((bufTile, key) => {
@@ -1547,7 +1653,7 @@ export default function MorningPaint() {
 
     // Initialize stroke buffer for brushes that use buffered compositing
     const b = brushRef.current
-    if (b === 'watercolor' || b === 'oil' || b === 'calligraphy') {
+    if (b === 'watercolor' || b === 'oil' || b === 'calligraphy' || b === 'inkwash') {
       strokeBufRef.current = new Map()
       strokeBufBrushRef.current = b
     }
@@ -1626,6 +1732,8 @@ export default function MorningPaint() {
           paintOilToBuffer(strokeBufRef.current, tilesRef.current, from, to, color, size, pr, vel)
         } else if (curBrush === 'calligraphy') {
           paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeCalligraphy)
+        } else if (curBrush === 'inkwash') {
+          paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeInkWash)
         } else {
           paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel)
         }
@@ -1668,7 +1776,7 @@ export default function MorningPaint() {
     // Composite stroke buffer onto tiles
     if (wasDrawing && strokeBufRef.current && strokeBufRef.current.size > 0) {
       const bufBrush = strokeBufBrushRef.current
-      const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA : bufBrush === 'calligraphy' ? INK_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
+      const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA : bufBrush === 'calligraphy' ? INK_COMPOSITE_ALPHA : bufBrush === 'inkwash' ? INKWASH_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
       compositeBuffer(strokeBufRef.current, tilesRef.current, alpha)
       strokeBufRef.current = null
       strokeBufBrushRef.current = null
