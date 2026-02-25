@@ -177,16 +177,17 @@ const PAPERS = [
 
 // ─── BRUSH DEFINITIONS ───
 const BRUSHES = [
-  { id: 'felt',        label: 'Felt Tip' },
-  { id: 'watercolor',  label: 'Watercolor' },
-  { id: 'calligraphy', label: 'Ink Brush' },
-  { id: 'inkwash',     label: 'Ink Wash' },
-  { id: 'pastel',      label: 'Soft Pastel' },
-  { id: 'charcoal',    label: 'Charcoal' },
-  { id: 'oil',         label: 'Oil Paint' },
-  { id: 'smudge',      label: 'Smudge' },
-  { id: 'eraser',      label: 'Eraser' },
-  { id: 'fill',        label: 'Fill' },
+  { id: 'felt',         label: 'Felt Tip' },
+  { id: 'watercolor',   label: 'Watercolor' },
+  { id: 'watercolor2',  label: 'Watercolor V2' },
+  { id: 'calligraphy',  label: 'Ink Brush' },
+  { id: 'inkwash',      label: 'Ink Wash' },
+  { id: 'pastel',       label: 'Soft Pastel' },
+  { id: 'charcoal',     label: 'Charcoal' },
+  { id: 'oil',          label: 'Oil Paint' },
+  { id: 'smudge',       label: 'Smudge' },
+  { id: 'eraser',       label: 'Eraser' },
+  { id: 'fill',         label: 'Fill' },
 ]
 
 const BRUSH_ICONS = {
@@ -199,6 +200,12 @@ const BRUSH_ICONS = {
   watercolor: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+    </svg>
+  ),
+  watercolor2: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+      <circle cx="17.5" cy="17.5" r="2.2" fill="currentColor" stroke="none" opacity="0.6"/>
     </svg>
   ),
   calligraphy: (
@@ -353,7 +360,6 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
   const stepSize = Math.max(size * 0.16, 2.2)
   const steps = Math.max(Math.floor(dist / stepSize), 1)
   const jitter = w * 0.38
-  const invDist = 1 / dist
 
   // Buffer mode: paint at elevated alpha; entire stroke composited at ~18% on pen-up
   // This ensures uniform opacity per stroke with predictable darkening on overlap
@@ -1048,6 +1054,7 @@ function strokeEraser(ctx, from, to, _color, size, pressure) {
 const STROKE_FN = {
   felt: strokeFelt,
   watercolor: strokeWatercolor,
+  watercolor2: strokeWatercolor,
   calligraphy: strokeCalligraphy,
   inkwash: strokeInkWash,
   pastel: strokePastel,
@@ -1210,12 +1217,252 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
   cache.forEach(({ ctx, id }) => ctx.putImageData(id, 0, 0))
 }
 
+// ─── WATERCOLOR V2 (per-stroke low-res sim) ───
+function ensureWc2Tile(simTiles, tx, ty) {
+  const key = `${tx},${ty}`
+  let tile = simTiles.get(key)
+  if (!tile) {
+    const w = WC2_TILE_SIZE
+    const h = WC2_TILE_SIZE
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    const imageData = ctx.createImageData(w, h)
+    tile = {
+      tx, ty, key, w, h,
+      water: new Float32Array(w * h),
+      pigment: new Float32Array(w * h),
+      water2: new Float32Array(w * h),
+      pigment2: new Float32Array(w * h),
+      canvas,
+      ctx,
+      imageData,
+    }
+    simTiles.set(key, tile)
+  }
+  return tile
+}
+
+function depositWatercolorSim(simTiles, from, to, size, pressure, velocity) {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1
+  const vel = Math.max(0, Math.min(velocity ?? 0, 1))
+  const pr = Math.max(0.05, Math.min(pressure ?? 0.5, 1))
+
+  const step = Math.max(size * 0.35, 4)
+  const steps = Math.max(1, Math.ceil(dist / step))
+  const radius = Math.max(1, size * (0.55 + pr * 0.75) * WC2_SCALE)
+  const r2 = radius * radius
+  const waterAmt = (0.08 + pr * 0.18) * (1 - vel * 0.5)
+  const pigmentAmt = (0.06 + pr * 0.22) * (1 - vel * 0.4)
+
+  const touched = new Set()
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const wx = from.x + dx * t
+    const wy = from.y + dy * t
+    const grain = sampleGrain(wx, wy)
+    const grainMod = 0.75 + grain * 0.5
+
+    const sx = Math.floor(wx * WC2_SCALE)
+    const sy = Math.floor(wy * WC2_SCALE)
+    const r = Math.ceil(radius)
+    for (let oy = -r; oy <= r; oy++) {
+      for (let ox = -r; ox <= r; ox++) {
+        const d2 = ox * ox + oy * oy
+        if (d2 > r2) continue
+        const fall = 1 - Math.sqrt(d2) / radius
+        const gx = sx + ox
+        const gy = sy + oy
+        const tx = Math.floor(gx / WC2_TILE_SIZE)
+        const ty = Math.floor(gy / WC2_TILE_SIZE)
+        const tile = ensureWc2Tile(simTiles, tx, ty)
+        const lx = gx - tx * WC2_TILE_SIZE
+        const ly = gy - ty * WC2_TILE_SIZE
+        if (lx < 0 || lx >= tile.w || ly < 0 || ly >= tile.h) continue
+        const idx = ly * tile.w + lx
+        const wAdd = fall * waterAmt * grainMod
+        const pAdd = fall * pigmentAmt * grainMod
+        tile.water[idx] = Math.min(1, tile.water[idx] + wAdd)
+        tile.pigment[idx] = Math.min(1, tile.pigment[idx] + pAdd)
+        touched.add(tile.key)
+      }
+    }
+  }
+  return touched
+}
+
+function sampleSimField(simTiles, tx, ty, x, y, field) {
+  let ntx = tx
+  let nty = ty
+  if (x < 0) { ntx = tx - 1; x += WC2_TILE_SIZE }
+  else if (x >= WC2_TILE_SIZE) { ntx = tx + 1; x -= WC2_TILE_SIZE }
+  if (y < 0) { nty = ty - 1; y += WC2_TILE_SIZE }
+  else if (y >= WC2_TILE_SIZE) { nty = ty + 1; y -= WC2_TILE_SIZE }
+  const nt = simTiles.get(`${ntx},${nty}`)
+  if (!nt) return 0
+  return nt[field][y * nt.w + x]
+}
+
+function stepWatercolorSim(simTiles, steps) {
+  for (let s = 0; s < steps; s++) {
+    simTiles.forEach((tile) => {
+      const { w, h, tx, ty, water, pigment, water2, pigment2 } = tile
+      const lastX = w - 1
+      const lastY = h - 1
+
+      // Interior
+      for (let y = 1; y < lastY; y++) {
+        let idx = y * w + 1
+        for (let x = 1; x < lastX; x++, idx++) {
+          const cW = water[idx]
+          const cP = pigment[idx]
+          const nW = water[idx - w]
+          const sW = water[idx + w]
+          const eW = water[idx + 1]
+          const wW = water[idx - 1]
+          const lapW = nW + sW + eW + wW - 4 * cW
+          let nw = cW + WC2_WATER_DIFFUSE * lapW - WC2_EVAPORATION * cW
+          if (nw < 0) nw = 0
+
+          const nP = pigment[idx - w]
+          const sP = pigment[idx + w]
+          const eP = pigment[idx + 1]
+          const wP = pigment[idx - 1]
+          const lapP = nP + sP + eP + wP - 4 * cP
+          let np = cP + WC2_PIGMENT_DIFFUSE * lapP
+          if (np < 0) np = 0
+
+          water2[idx] = nw
+          pigment2[idx] = np
+        }
+      }
+
+      // Edges
+      for (let x = 0; x < w; x++) {
+        for (const y of [0, lastY]) {
+          const idx = y * w + x
+          const cW = water[idx]
+          const cP = pigment[idx]
+          const nW = sampleSimField(simTiles, tx, ty, x, y - 1, 'water')
+          const sW = sampleSimField(simTiles, tx, ty, x, y + 1, 'water')
+          const eW = sampleSimField(simTiles, tx, ty, x + 1, y, 'water')
+          const wW = sampleSimField(simTiles, tx, ty, x - 1, y, 'water')
+          const lapW = nW + sW + eW + wW - 4 * cW
+          let nw = cW + WC2_WATER_DIFFUSE * lapW - WC2_EVAPORATION * cW
+          if (nw < 0) nw = 0
+
+          const nP = sampleSimField(simTiles, tx, ty, x, y - 1, 'pigment')
+          const sP = sampleSimField(simTiles, tx, ty, x, y + 1, 'pigment')
+          const eP = sampleSimField(simTiles, tx, ty, x + 1, y, 'pigment')
+          const wP = sampleSimField(simTiles, tx, ty, x - 1, y, 'pigment')
+          const lapP = nP + sP + eP + wP - 4 * cP
+          let np = cP + WC2_PIGMENT_DIFFUSE * lapP
+          if (np < 0) np = 0
+
+          water2[idx] = nw
+          pigment2[idx] = np
+        }
+      }
+
+      for (let y = 1; y < lastY; y++) {
+        for (const x of [0, lastX]) {
+          const idx = y * w + x
+          const cW = water[idx]
+          const cP = pigment[idx]
+          const nW = sampleSimField(simTiles, tx, ty, x, y - 1, 'water')
+          const sW = sampleSimField(simTiles, tx, ty, x, y + 1, 'water')
+          const eW = sampleSimField(simTiles, tx, ty, x + 1, y, 'water')
+          const wW = sampleSimField(simTiles, tx, ty, x - 1, y, 'water')
+          const lapW = nW + sW + eW + wW - 4 * cW
+          let nw = cW + WC2_WATER_DIFFUSE * lapW - WC2_EVAPORATION * cW
+          if (nw < 0) nw = 0
+
+          const nP = sampleSimField(simTiles, tx, ty, x, y - 1, 'pigment')
+          const sP = sampleSimField(simTiles, tx, ty, x, y + 1, 'pigment')
+          const eP = sampleSimField(simTiles, tx, ty, x + 1, y, 'pigment')
+          const wP = sampleSimField(simTiles, tx, ty, x - 1, y, 'pigment')
+          const lapP = nP + sP + eP + wP - 4 * cP
+          let np = cP + WC2_PIGMENT_DIFFUSE * lapP
+          if (np < 0) np = 0
+
+          water2[idx] = nw
+          pigment2[idx] = np
+        }
+      }
+    })
+
+    simTiles.forEach((tile) => {
+      const tmpW = tile.water
+      tile.water = tile.water2
+      tile.water2 = tmpW
+      const tmpP = tile.pigment
+      tile.pigment = tile.pigment2
+      tile.pigment2 = tmpP
+    })
+  }
+}
+
+function renderWatercolorSimTiles(simTiles, bufferTiles, color, keys) {
+  const rgb = hexToRgb(color)
+  const renderKeys = keys ? Array.from(keys) : Array.from(simTiles.keys())
+  for (const key of renderKeys) {
+    const tile = simTiles.get(key)
+    if (!tile) continue
+    const { w, h, pigment, water, ctx, imageData } = tile
+    const data = imageData.data
+    for (let i = 0; i < pigment.length; i++) {
+      const p = pigment[i]
+      const wv = water[i]
+      const dry = 1 - Math.min(1, wv)
+      let a = p * (0.35 + 0.65 * dry)
+      if (a < 0.001) {
+        data[i * 4 + 3] = 0
+        continue
+      }
+      a = Math.min(1, Math.pow(a, 0.85))
+      const di = i * 4
+      data[di] = rgb.r
+      data[di + 1] = rgb.g
+      data[di + 2] = rgb.b
+      data[di + 3] = Math.round(a * 255)
+    }
+    ctx.putImageData(imageData, 0, 0)
+
+    const bufTile = ensureTile(bufferTiles, key)
+    const bctx = bufTile.getContext('2d')
+    bctx.save()
+    bctx.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
+    bctx.imageSmoothingEnabled = true
+    bctx.imageSmoothingQuality = 'high'
+    if (WC2_RENDER_BLUR > 0) bctx.filter = `blur(${WC2_RENDER_BLUR}px)`
+    bctx.drawImage(tile.canvas, 0, 0, w, h, 0, 0, TILE_SIZE, TILE_SIZE)
+    bctx.restore()
+  }
+}
+
+function paintWatercolor2Sim(simTiles, bufferTiles, from, to, color, size, pressure, velocity) {
+  if (!simTiles || !bufferTiles) return
+  const touched = depositWatercolorSim(simTiles, from, to, size, pressure, velocity)
+  renderWatercolorSimTiles(simTiles, bufferTiles, color, touched)
+}
+
 // ─── INFINITE CANVAS SYSTEM ───
 const TILE_SIZE = 2048
 const WC_COMPOSITE_ALPHA = 0.22
 const OIL_COMPOSITE_ALPHA = 0.88
 const INK_COMPOSITE_ALPHA = 1.0
 const INKWASH_COMPOSITE_ALPHA = 0.35
+const WC2_COMPOSITE_ALPHA = 1.0
+const WC2_SCALE = 0.25
+const WC2_TILE_SIZE = Math.floor(TILE_SIZE * WC2_SCALE)
+const WC2_STEPS = 8
+const WC2_WATER_DIFFUSE = 0.22
+const WC2_PIGMENT_DIFFUSE = 0.08
+const WC2_EVAPORATION = 0.03
+const WC2_RENDER_BLUR = 0.6
 const MIN_ZOOM = 0.15
 const MAX_ZOOM = 4
 const TOOLBAR_HIDE_DELAY = 2500
@@ -1535,7 +1782,7 @@ export default function MorningPaint() {
 
     // Adaptive alpha: fast = near-raw, slow = heavy smoothing
     // Watercolor gets extra smoothing for that flowing, liquid feel
-    const isWatercolor = brushRef.current === 'watercolor'
+    const isWatercolor = brushRef.current === 'watercolor' || brushRef.current === 'watercolor2'
     const minAlpha = isWatercolor ? 0.2 : 0.4
     const maxAlpha = isWatercolor ? 0.7 : 0.9
     const velocityThreshold = 3.0
@@ -1587,6 +1834,7 @@ export default function MorningPaint() {
   // Used by watercolor (transparent layering) and oil (consistent coverage)
   const strokeBufRef = useRef(null)
   const strokeBufBrushRef = useRef(null)
+  const strokeSimRef = useRef(null)
   const wcPathRef = useRef([])
 
   // Two-finger rewind gesture
@@ -1823,7 +2071,11 @@ export default function MorningPaint() {
     // Live preview of stroke buffer (shown at target composite alpha)
     const sBuf = strokeBufRef.current
     if (sBuf && sBuf.size > 0) {
-      const previewAlpha = strokeBufBrushRef.current === 'oil' ? OIL_COMPOSITE_ALPHA : strokeBufBrushRef.current === 'calligraphy' ? INK_COMPOSITE_ALPHA : strokeBufBrushRef.current === 'inkwash' ? INKWASH_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
+      const previewAlpha = strokeBufBrushRef.current === 'oil' ? OIL_COMPOSITE_ALPHA
+        : strokeBufBrushRef.current === 'calligraphy' ? INK_COMPOSITE_ALPHA
+          : strokeBufBrushRef.current === 'inkwash' ? INKWASH_COMPOSITE_ALPHA
+            : strokeBufBrushRef.current === 'watercolor2' ? WC2_COMPOSITE_ALPHA
+              : WC_COMPOSITE_ALPHA
       ctx.save()
       ctx.globalAlpha = previewAlpha
       sBuf.forEach((bufTile, key) => {
@@ -1968,9 +2220,10 @@ export default function MorningPaint() {
 
     // Initialize stroke buffer for brushes that use buffered compositing
     const b = brushRef.current
-    if (b === 'watercolor' || b === 'oil' || b === 'calligraphy' || b === 'inkwash') {
+    if (b === 'watercolor' || b === 'watercolor2' || b === 'oil' || b === 'calligraphy' || b === 'inkwash') {
       strokeBufRef.current = new Map()
       strokeBufBrushRef.current = b
+      if (b === 'watercolor2') strokeSimRef.current = new Map()
     }
 
     // Don't paint a dot here. The first onDraw will paint from this position.
@@ -2045,6 +2298,8 @@ export default function MorningPaint() {
       if (useBuffer) {
         if (curBrush === 'oil') {
           paintOilToBuffer(strokeBufRef.current, tilesRef.current, from, to, color, size, pr, vel)
+        } else if (curBrush === 'watercolor2') {
+          paintWatercolor2Sim(strokeSimRef.current, strokeBufRef.current, from, to, color, size, pr, vel)
         } else if (curBrush === 'calligraphy') {
           paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeCalligraphy)
         } else if (curBrush === 'inkwash') {
@@ -2120,7 +2375,17 @@ export default function MorningPaint() {
         }
       }
 
-      const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA : bufBrush === 'calligraphy' ? INK_COMPOSITE_ALPHA : bufBrush === 'inkwash' ? INKWASH_COMPOSITE_ALPHA : WC_COMPOSITE_ALPHA
+      if (bufBrush === 'watercolor2' && strokeSimRef.current) {
+        stepWatercolorSim(strokeSimRef.current, WC2_STEPS)
+        renderWatercolorSimTiles(strokeSimRef.current, strokeBufRef.current, color)
+        strokeSimRef.current = null
+      }
+
+      const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA
+        : bufBrush === 'calligraphy' ? INK_COMPOSITE_ALPHA
+          : bufBrush === 'inkwash' ? INKWASH_COMPOSITE_ALPHA
+            : bufBrush === 'watercolor2' ? WC2_COMPOSITE_ALPHA
+              : WC_COMPOSITE_ALPHA
       compositeBuffer(strokeBufRef.current, tilesRef.current, alpha)
       strokeBufRef.current = null
       strokeBufBrushRef.current = null
