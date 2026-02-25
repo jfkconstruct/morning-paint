@@ -1060,7 +1060,9 @@ const STROKE_FN = {
 }
 
 // ─── FLOOD FILL (scanline, tile-aware, zero-alloc visited) ───
-const FILL_TOLERANCE = 32
+const FILL_COLOR_TOLERANCE = 60 // Euclidean RGB tolerance
+const FILL_ALPHA_WEIGHT = 0.15  // reduce alpha banding in soft washes
+const FILL_TRANSPARENT_ALPHA = 24
 const FILL_MAX_PIXELS = 800000  // hard cap to stay responsive
 
 function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
@@ -1095,24 +1097,49 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
     return ((wy - entry.oy) * tileSize + (wx - entry.ox)) * 4
   }
 
-  // Read seed color
-  const se = tileData(sx, sy)
-  const si = idx(se, sx, sy)
-  // If tile didn't exist before (all transparent) treat seed as [0,0,0,0]
-  const sr = se.data[si], sg = se.data[si + 1], sb = se.data[si + 2], sa = se.data[si + 3]
+  // Read seed color (3x3 average to reduce grain/banding)
+  let sr = 0, sg = 0, sb = 0, sa = 0, sc = 0
+  for (let oy = -1; oy <= 1; oy++) {
+    for (let ox = -1; ox <= 1; ox++) {
+      const e = tileData(sx + ox, sy + oy)
+      const i = idx(e, sx + ox, sy + oy)
+      sr += e.data[i]
+      sg += e.data[i + 1]
+      sb += e.data[i + 2]
+      sa += e.data[i + 3]
+      sc++
+    }
+  }
+  sr = Math.round(sr / sc)
+  sg = Math.round(sg / sc)
+  sb = Math.round(sb / sc)
+  sa = Math.round(sa / sc)
+
+  const colorTolSq = FILL_COLOR_TOLERANCE * FILL_COLOR_TOLERANCE
 
   // Don't fill if seed is already the fill color
-  if (Math.abs(sr - fr) <= FILL_TOLERANCE && Math.abs(sg - fg) <= FILL_TOLERANCE &&
-      Math.abs(sb - fb) <= FILL_TOLERANCE && Math.abs(sa - fa) <= FILL_TOLERANCE) return
+  {
+    const dr = sr - fr
+    const dg = sg - fg
+    const db = sb - fb
+    const da = sa - fa
+    const dist = dr * dr + dg * dg + db * db + da * da * FILL_ALPHA_WEIGHT
+    if (dist <= colorTolSq) return
+  }
 
   // Match check — inline for speed (no array alloc)
   function match(wx, wy) {
     const e = tileData(wx, wy)
     const i = idx(e, wx, wy)
-    return Math.abs(e.data[i] - sr) <= FILL_TOLERANCE &&
-           Math.abs(e.data[i + 1] - sg) <= FILL_TOLERANCE &&
-           Math.abs(e.data[i + 2] - sb) <= FILL_TOLERANCE &&
-           Math.abs(e.data[i + 3] - sa) <= FILL_TOLERANCE
+    const dr = e.data[i] - sr
+    const dg = e.data[i + 1] - sg
+    const db = e.data[i + 2] - sb
+    const colorDist = dr * dr + dg * dg + db * db
+    if (sa < 8) {
+      return e.data[i + 3] < FILL_TRANSPARENT_ALPHA && colorDist <= colorTolSq
+    }
+    const da = e.data[i + 3] - sa
+    return (colorDist + da * da * FILL_ALPHA_WEIGHT) <= colorTolSq
   }
 
   // Write pixel — also serves as "visited" marker (pixel no longer matches seed)
