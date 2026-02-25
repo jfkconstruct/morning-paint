@@ -558,7 +558,7 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const dy = to.y - from.y
   const dist = Math.sqrt(dx * dx + dy * dy)
   // Skip micro-segments; they tend to create bead artifacts with stamped ellipses.
-  if (dist < 0.12) { ctx.restore(); return }
+  if (dist < 0.03) { ctx.restore(); return }
 
   const vel = Math.max(0, Math.min(velocity ?? 0, 1))
   const pr = Math.max(0.0, Math.min(pressure ?? 0.5, 1))
