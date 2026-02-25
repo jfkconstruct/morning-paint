@@ -2528,8 +2528,19 @@ export default function MorningPaint() {
     velocityRef.current = 0
     panRef.current.active = false
     if (pointersRef.current.size < 2) pinchRef.current.active = false
-    showToolbar()
-    scheduleHideToolbar()
+    // Pen input: don't flash toolbar between strokes, just schedule idle show
+    if (pointerTypeRef.current === 'pen') {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+      hideTimerRef.current = setTimeout(() => {
+        if (!drawingRef.current) {
+          showToolbar()
+          scheduleHideToolbar()
+        }
+      }, TOOLBAR_HIDE_DELAY)
+    } else {
+      showToolbar()
+      scheduleHideToolbar()
+    }
     if (wasDrawing) scheduleSave()
   }, [showToolbar, scheduleHideToolbar, color, size, opacity, scheduleRender, scheduleSave])
 
