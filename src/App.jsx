@@ -1830,8 +1830,8 @@ export default function MorningPaint() {
     const isFlowBrush = brushRef.current === 'watercolor' || brushRef.current === 'watercolor2' || brushRef.current === 'inkwash'
     const isFelt = brushRef.current === 'felt'
     const isPen = pointerTypeRef.current === 'pen'
-    const minAlpha = isFlowBrush ? 0.2 : (isPen && isFelt ? 0.22 : (isPen ? 0.28 : 0.4))
-    const maxAlpha = isFlowBrush ? 0.68 : (isPen && isFelt ? 0.66 : (isPen ? 0.72 : 0.9))
+    const minAlpha = isFlowBrush ? 0.2 : (isPen && isFelt ? 0.22 : (isPen ? 0.38 : 0.4))
+    const maxAlpha = isFlowBrush ? 0.68 : (isPen && isFelt ? 0.66 : (isPen ? 0.82 : 0.9))
     const velocityThreshold = 3.0
     const alpha = minAlpha + Math.min(velocityRef.current / velocityThreshold, 1.0) * (maxAlpha - minAlpha)
 
@@ -2375,12 +2375,11 @@ export default function MorningPaint() {
       const rawWp = screenToWorld(sp.x, sp.y)
       const isPen = pointerTypeRef.current === 'pen'
       const rawPressure = getPointerPressure(ev, lastPosRef.current, rawWp, isPen)
-      const emaIn = isPen ? 0.12 : 0.3
+      const emaIn = isPen ? 0.22 : 0.3
       let pressure = paintPressureRef.current * (1 - emaIn) + rawPressure * emaIn
-      const maxStep = isPen ? 0.018 : 0.05
+      const maxStep = isPen ? 0.035 : 0.05
       const delta = pressure - paintPressureRef.current
       if (Math.abs(delta) > maxStep) pressure = paintPressureRef.current + Math.sign(delta) * maxStep
-      if (isPen && Math.abs(delta) < 0.008) pressure = paintPressureRef.current
       if (isPen && curBrush !== 'calligraphy') pressure = 0.08 + pressure * 0.28
       paintPressureRef.current = pressure
       const wp = smoothPoint(rawWp, pressure)
