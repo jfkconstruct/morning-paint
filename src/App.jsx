@@ -2425,8 +2425,13 @@ export default function MorningPaint() {
           Math.min(splineCfg.max, Math.ceil(segDist / splineCfg.divisor))
         )
         const splinePoints = catmullRomSegment(p0, p1, p2, p3, splineSegs)
+        let lastSplinePt = splinePoints[0]
         for (let i = 1; i < splinePoints.length; i++) {
-          paintSeg(splinePoints[i - 1], splinePoints[i], splinePoints[i].pressure)
+          const sp = splinePoints[i]
+          // Skip clustered points to prevent blob pile-up at stroke start/end
+          if (Math.hypot(sp.x - lastSplinePt.x, sp.y - lastSplinePt.y) < 0.5) continue
+          paintSeg(lastSplinePt, sp, sp.pressure)
+          lastSplinePt = sp
         }
       } else if (buf.length >= 3) {
         paintSeg(lastPosRef.current || wp, wp, pressure)
