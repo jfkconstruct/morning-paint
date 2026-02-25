@@ -2257,16 +2257,18 @@ export default function MorningPaint() {
     setShowPalette(false)
     setShowPaperMenu(false)
 
-    const snapshot = new Map()
-    tilesRef.current.forEach((tile, key) => {
-      const c = document.createElement('canvas')
-      c.width = TILE_SIZE
-      c.height = TILE_SIZE
-      c.getContext('2d').drawImage(tile, 0, 0)
-      snapshot.set(key, c)
-    })
-    historyRef.current.push(snapshot)
-    if (historyRef.current.length > 100) historyRef.current.shift()
+    setTimeout(() => {
+      const snapshot = new Map()
+      tilesRef.current.forEach((tile, key) => {
+        const c = document.createElement('canvas')
+        c.width = TILE_SIZE
+        c.height = TILE_SIZE
+        c.getContext('2d').drawImage(tile, 0, 0)
+        snapshot.set(key, c)
+      })
+      historyRef.current.push(snapshot)
+      if (historyRef.current.length > 100) historyRef.current.shift()
+    }, 0)
 
     // Fill tool: tap-to-fill, then bail out (no drag needed)
     if (brushRef.current === 'fill') {
