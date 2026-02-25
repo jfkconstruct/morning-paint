@@ -544,7 +544,8 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const dx = to.x - from.x
   const dy = to.y - from.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-  if (dist < 0.01) { ctx.restore(); return }
+  // Skip micro-segments; they tend to create bead artifacts with stamped ellipses.
+  if (dist < 0.12) { ctx.restore(); return }
 
   const vel = Math.max(0, Math.min(velocity ?? 0, 1))
   const pr = Math.max(0.0, Math.min(pressure ?? 0.5, 1))
@@ -566,9 +567,10 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const angle = Math.atan2(dy, dx)
   const step = Math.max(0.35, w * (0.35 - vel * 0.12))
   const steps = Math.max(1, Math.ceil(dist / step))
-  const major = w * (1.2 + vel * 0.9)
+  const major = w * (1.1 + vel * 0.55)
   const minor = Math.max(minMinor, w)
-  for (let i = 0; i <= steps; i++) {
+  // Start at i=1 so adjacent segments don't double-stamp shared endpoints.
+  for (let i = 1; i <= steps; i++) {
     const t = i / steps
     const px = from.x + dx * t
     const py = from.y + dy * t
@@ -595,7 +597,7 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   ctx.restore()
 
   // Rare ink bleed at edges: slow + heavy strokes only
-  if (vel < 0.15 && pr > 0.5 && w > 6 && Math.random() < 0.08) {
+  if (vel < 0.06 && pr > 0.7 && w > 8 && Math.random() < 0.015) {
     const mx = (from.x + to.x) * 0.5
     const my = (from.y + to.y) * 0.5
     const angle = Math.random() * Math.PI * 2
@@ -2426,16 +2428,19 @@ export default function MorningPaint() {
             const ux = dx / dist
             const uy = dy / dist
             const basePressure = p2.pressure ?? 0.5
-            const tailLen = Math.max(0.5, size * 0.45 * (0.4 + basePressure))
-            const steps = 3
             const tailVel = Math.min(velocityRef.current / 3.0, 1.0)
-            let prev = { x: p2.x, y: p2.y }
-            for (let i = 1; i <= steps; i++) {
-              const t = i / steps
-              const pt = { x: p2.x + ux * tailLen * t, y: p2.y + uy * tailLen * t }
-              const pr = basePressure * (1 - t)
-              paintToBuffer(strokeBufRef.current, prev, pt, color, size, pr, tailVel, strokeCalligraphy)
-              prev = pt
+            // Avoid long terminal spikes on fast lift.
+            if (tailVel < 0.55) {
+              const tailLen = Math.max(0.4, size * 0.32 * (0.35 + basePressure))
+              const steps = 2
+              let prev = { x: p2.x, y: p2.y }
+              for (let i = 1; i <= steps; i++) {
+                const t = i / steps
+                const pt = { x: p2.x + ux * tailLen * t, y: p2.y + uy * tailLen * t }
+                const pr = basePressure * (1 - t)
+                paintToBuffer(strokeBufRef.current, prev, pt, color, size, pr, tailVel, strokeCalligraphy)
+                prev = pt
+              }
             }
           }
         }
