@@ -1778,6 +1778,7 @@ export default function MorningPaint() {
   const historyRef = useRef([])
   const rafRef = useRef(null)
   const lastPressureRef = useRef(0.5)
+  const pointerTypeRef = useRef('mouse')
 
   // Adaptive EMA smoothing: fast strokes = minimal smoothing, slow = heavy
   const emaRef = useRef({ x: 0, y: 0, vx: 0, vy: 0, lastTime: 0 })
@@ -1807,8 +1808,9 @@ export default function MorningPaint() {
     // Adaptive alpha: fast = near-raw, slow = heavy smoothing
     // Watercolor gets extra smoothing for that flowing, liquid feel
     const isWatercolor = brushRef.current === 'watercolor' || brushRef.current === 'watercolor2'
-    const minAlpha = isWatercolor ? 0.2 : 0.4
-    const maxAlpha = isWatercolor ? 0.7 : 0.9
+    const isPen = pointerTypeRef.current === 'pen'
+    const minAlpha = isWatercolor ? 0.2 : (isPen ? 0.32 : 0.4)
+    const maxAlpha = isWatercolor ? 0.7 : (isPen ? 0.82 : 0.9)
     const velocityThreshold = 3.0
     const alpha = minAlpha + Math.min(velocityRef.current / velocityThreshold, 1.0) * (maxAlpha - minAlpha)
 
@@ -2178,6 +2180,7 @@ export default function MorningPaint() {
   const startDraw = useCallback((e) => {
     e.preventDefault()
     if (!canvasRef.current) return
+    pointerTypeRef.current = e.pointerType || 'mouse'
 
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
 
@@ -2275,6 +2278,7 @@ export default function MorningPaint() {
 
   const onDraw = useCallback((e) => {
     e.preventDefault()
+    pointerTypeRef.current = e.pointerType || pointerTypeRef.current
 
     if (pointersRef.current.has(e.pointerId)) {
       pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
@@ -2325,66 +2329,75 @@ export default function MorningPaint() {
     }
 
     if (!drawingRef.current) return
-    const sp = getScreenPos(e)
-    const rawWp = screenToWorld(sp.x, sp.y)
-    const pressure = getPointerPressure(e, lastPosRef.current, rawWp)
-    const wp = smoothPoint(rawWp, pressure)
 
-    // Normalize velocity to 0-1 range for brush engines (3.0 px/ms = full speed)
-    const vel = Math.min(velocityRef.current / 3.0, 1.0)
+    const drawEvents = (e.pointerType === 'pen' && typeof e.getCoalescedEvents === 'function')
+      ? e.getCoalescedEvents()
+      : [e]
 
     // Catmull-Rom interpolation: when we have 4+ points, interpolate through spline
     const useBuffer = strokeBufRef.current !== null
     const curBrush = brushRef.current
-    const buf = splineBufferRef.current
-    const paintSeg = (from, to, pr) => {
-      if (useBuffer) {
-        if (curBrush === 'oil') {
-          paintOilToBuffer(strokeBufRef.current, tilesRef.current, from, to, color, size, pr, vel)
-        } else if (curBrush === 'watercolor2') {
-          const touched = depositWatercolorSim(strokeSimRef.current, from, to, size, pr, vel)
-          if (touched && touched.size > 0) {
-            const dirty = wc2DirtyRef.current
-            touched.forEach(k => dirty.add(k))
-            const now = performance.now()
-            if (now - wc2LastPreviewRef.current >= WC2_PREVIEW_MS) {
-              renderWatercolorSimTiles(strokeSimRef.current, strokeBufRef.current, color, dirty)
-              dirty.clear()
-              wc2LastPreviewRef.current = now
+
+    for (const ev of drawEvents) {
+      const sp = getScreenPos(ev)
+      const rawWp = screenToWorld(sp.x, sp.y)
+      const pressure = getPointerPressure(ev, lastPosRef.current, rawWp)
+      const wp = smoothPoint(rawWp, pressure)
+      const vel = Math.min(velocityRef.current / 3.0, 1.0)
+
+      const paintSeg = (from, to, pr) => {
+        if (useBuffer) {
+          if (curBrush === 'oil') {
+            paintOilToBuffer(strokeBufRef.current, tilesRef.current, from, to, color, size, pr, vel)
+          } else if (curBrush === 'watercolor2') {
+            const touched = depositWatercolorSim(strokeSimRef.current, from, to, size, pr, vel)
+            if (touched && touched.size > 0) {
+              const dirty = wc2DirtyRef.current
+              touched.forEach(k => dirty.add(k))
+              const now = performance.now()
+              if (now - wc2LastPreviewRef.current >= WC2_PREVIEW_MS) {
+                renderWatercolorSimTiles(strokeSimRef.current, strokeBufRef.current, color, dirty)
+                dirty.clear()
+                wc2LastPreviewRef.current = now
+              }
             }
+          } else if (curBrush === 'calligraphy') {
+            paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeCalligraphy)
+          } else if (curBrush === 'inkwash') {
+            paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeInkWash)
+          } else {
+            paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel)
           }
-        } else if (curBrush === 'calligraphy') {
-          paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeCalligraphy)
-        } else if (curBrush === 'inkwash') {
-          paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeInkWash)
         } else {
-          paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel)
+          paintToTiles(tilesRef.current, from, to, brush, color, size, pr, opacity, vel)
+        }
+      }
+
+      const buf = splineBufferRef.current
+      if (buf.length >= 4) {
+        const p0 = buf[buf.length - 4]
+        const p1 = buf[buf.length - 3]
+        const p2 = buf[buf.length - 2]
+        const p3 = buf[buf.length - 1]
+        const segDist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+        const splineSegs = Math.max(6, Math.min(16, Math.ceil(segDist / 2)))
+        const splinePoints = catmullRomSegment(p0, p1, p2, p3, splineSegs)
+        for (let i = 1; i < splinePoints.length; i++) {
+          paintSeg(splinePoints[i - 1], splinePoints[i], splinePoints[i].pressure)
         }
       } else {
-        paintToTiles(tilesRef.current, from, to, brush, color, size, pr, opacity, vel)
+        paintSeg(lastPosRef.current || wp, wp, pressure)
       }
-    }
-    if (buf.length >= 4) {
-      const p0 = buf[buf.length - 4]
-      const p1 = buf[buf.length - 3]
-      const p2 = buf[buf.length - 2]
-      const p3 = buf[buf.length - 1]
-      const splinePoints = catmullRomSegment(p0, p1, p2, p3, 6)
-      for (let i = 1; i < splinePoints.length; i++) {
-        paintSeg(splinePoints[i - 1], splinePoints[i], splinePoints[i].pressure)
-      }
-    } else {
-      paintSeg(lastPosRef.current || wp, wp, pressure)
-    }
 
-    lastPosRef.current = wp
+      lastPosRef.current = wp
 
-    // Collect path for watercolor wet edge (subsample: skip points too close together)
-    if (brushRef.current === 'watercolor') {
-      const wcPath = wcPathRef.current
-      const last = wcPath[wcPath.length - 1]
-      if (!last || Math.hypot(wp.x - last.x, wp.y - last.y) > size * 0.5) {
-        wcPath.push({ x: wp.x, y: wp.y, pressure })
+      // Collect path for watercolor wet edge (subsample: skip points too close together)
+      if (brushRef.current === 'watercolor') {
+        const wcPath = wcPathRef.current
+        const last = wcPath[wcPath.length - 1]
+        if (!last || Math.hypot(wp.x - last.x, wp.y - last.y) > size * 0.5) {
+          wcPath.push({ x: wp.x, y: wp.y, pressure })
+        }
       }
     }
 
