@@ -1054,139 +1054,115 @@ const STROKE_FN = {
   eraser: strokeEraser,
 }
 
-// ─── FLOOD FILL (scanline, tile-aware) ───
+// ─── FLOOD FILL (scanline, tile-aware, zero-alloc visited) ───
 const FILL_TOLERANCE = 32
-
-function getWorldPixel(tiles, wx, wy, tileSize) {
-  const tx = Math.floor(wx / tileSize)
-  const ty = Math.floor(wy / tileSize)
-  const key = `${tx},${ty}`
-  const tile = tiles.get(key)
-  if (!tile) return [0, 0, 0, 0]
-  const lx = wx - tx * tileSize
-  const ly = wy - ty * tileSize
-  const ctx = tile.getContext('2d')
-  const px = ctx.getImageData(lx, ly, 1, 1).data
-  return [px[0], px[1], px[2], px[3]]
-}
-
-function colorsMatch(a, b, tol) {
-  return Math.abs(a[0] - b[0]) <= tol &&
-         Math.abs(a[1] - b[1]) <= tol &&
-         Math.abs(a[2] - b[2]) <= tol &&
-         Math.abs(a[3] - b[3]) <= tol
-}
+const FILL_MAX_PIXELS = 800000  // hard cap to stay responsive
 
 function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
   const sx = Math.round(startX)
   const sy = Math.round(startY)
-  const seedColor = getWorldPixel(tiles, sx, sy, tileSize)
 
   // Parse fill color
-  const r = parseInt(fillColor.slice(1, 3), 16)
-  const g = parseInt(fillColor.slice(3, 5), 16)
-  const b = parseInt(fillColor.slice(5, 7), 16)
-  const a = Math.round((opacityPct / 100) * 255)
+  const fr = parseInt(fillColor.slice(1, 3), 16)
+  const fg = parseInt(fillColor.slice(3, 5), 16)
+  const fb = parseInt(fillColor.slice(5, 7), 16)
+  const fa = Math.round((opacityPct / 100) * 255)
+
+  // Tile imageData cache — lazy load, batch flush at end
+  const cache = new Map()
+  function tileData(wx, wy) {
+    const tx = Math.floor(wx / tileSize)
+    const ty = Math.floor(wy / tileSize)
+    const key = `${tx},${ty}`
+    let entry = cache.get(key)
+    if (!entry) {
+      const tile = ensureTile(tiles, key)
+      const ctx = tile.getContext('2d')
+      const id = ctx.getImageData(0, 0, tileSize, tileSize)
+      entry = { ctx, data: id.data, id, ox: tx * tileSize, oy: ty * tileSize }
+      cache.set(key, entry)
+    }
+    return entry
+  }
+
+  // Inline pixel index into a tile's data array
+  function idx(entry, wx, wy) {
+    return ((wy - entry.oy) * tileSize + (wx - entry.ox)) * 4
+  }
+
+  // Read seed color
+  const se = tileData(sx, sy)
+  const si = idx(se, sx, sy)
+  // If tile didn't exist before (all transparent) treat seed as [0,0,0,0]
+  const sr = se.data[si], sg = se.data[si + 1], sb = se.data[si + 2], sa = se.data[si + 3]
 
   // Don't fill if seed is already the fill color
-  if (colorsMatch(seedColor, [r, g, b, a], FILL_TOLERANCE)) return
+  if (Math.abs(sr - fr) <= FILL_TOLERANCE && Math.abs(sg - fg) <= FILL_TOLERANCE &&
+      Math.abs(sb - fb) <= FILL_TOLERANCE && Math.abs(sa - fa) <= FILL_TOLERANCE) return
 
-  // Batch pixel writes per tile: Map<key, {ctx, imageData}>
-  const tileCache = new Map()
-  function getTileData(tx, ty) {
-    const key = `${tx},${ty}`
-    if (tileCache.has(key)) return tileCache.get(key)
-    const tile = ensureTile(tiles, key)
-    const ctx = tile.getContext('2d')
-    const imageData = ctx.getImageData(0, 0, tileSize, tileSize)
-    tileCache.set(key, { ctx, imageData })
-    return { ctx, imageData }
+  // Match check — inline for speed (no array alloc)
+  function match(wx, wy) {
+    const e = tileData(wx, wy)
+    const i = idx(e, wx, wy)
+    return Math.abs(e.data[i] - sr) <= FILL_TOLERANCE &&
+           Math.abs(e.data[i + 1] - sg) <= FILL_TOLERANCE &&
+           Math.abs(e.data[i + 2] - sb) <= FILL_TOLERANCE &&
+           Math.abs(e.data[i + 3] - sa) <= FILL_TOLERANCE
   }
 
-  function readPixel(wx, wy) {
-    const tx = Math.floor(wx / tileSize)
-    const ty = Math.floor(wy / tileSize)
-    const { imageData } = getTileData(tx, ty)
-    const lx = wx - tx * tileSize
-    const ly = wy - ty * tileSize
-    const i = (ly * tileSize + lx) * 4
-    return [imageData.data[i], imageData.data[i + 1], imageData.data[i + 2], imageData.data[i + 3]]
+  // Write pixel — also serves as "visited" marker (pixel no longer matches seed)
+  function paint(wx, wy) {
+    const e = tileData(wx, wy)
+    const i = idx(e, wx, wy)
+    e.data[i] = fr; e.data[i + 1] = fg; e.data[i + 2] = fb; e.data[i + 3] = fa
   }
 
-  function writePixel(wx, wy) {
-    const tx = Math.floor(wx / tileSize)
-    const ty = Math.floor(wy / tileSize)
-    const { imageData } = getTileData(tx, ty)
-    const lx = wx - tx * tileSize
-    const ly = wy - ty * tileSize
-    const i = (ly * tileSize + lx) * 4
-    imageData.data[i] = r
-    imageData.data[i + 1] = g
-    imageData.data[i + 2] = b
-    imageData.data[i + 3] = a
-  }
-
-  // Limit fill region to prevent runaway fills on empty canvas
-  const MAX_SPAN = 4000
+  const MAX_SPAN = 2000
   const minX = sx - MAX_SPAN, maxX = sx + MAX_SPAN
   const minY = sy - MAX_SPAN, maxY = sy + MAX_SPAN
 
-  // Scanline flood fill
-  const stack = [[sx, sy]]
-  const visited = new Set()
-  visited.add(`${sx},${sy}`)
+  // Scanline stack: [x, y] pairs stored flat for speed
+  const stack = new Int32Array(FILL_MAX_PIXELS * 2)
+  stack[0] = sx; stack[1] = sy
+  let sp = 2  // stack pointer
+  let filled = 0
 
-  while (stack.length > 0) {
-    const [x, y] = stack.pop()
-    if (y < minY || y > maxY) continue
+  // Seed must match
+  if (!match(sx, sy)) return
 
-    // Find left edge
+  paint(sx, sy)
+  filled++
+
+  while (sp > 0 && filled < FILL_MAX_PIXELS) {
+    sp -= 2
+    const x = stack[sp], y = stack[sp + 1]
+
+    // Scan left
     let left = x
-    while (left - 1 >= minX) {
-      const k = `${left - 1},${y}`
-      if (visited.has(k)) break
-      if (!colorsMatch(readPixel(left - 1, y), seedColor, FILL_TOLERANCE)) break
-      left--
-    }
+    while (left - 1 >= minX && match(left - 1, y)) { left--; paint(left, y); filled++ }
 
-    // Find right edge
+    // Scan right
     let right = x
-    while (right + 1 <= maxX) {
-      const k = `${right + 1},${y}`
-      if (visited.has(k)) break
-      if (!colorsMatch(readPixel(right + 1, y), seedColor, FILL_TOLERANCE)) break
-      right++
-    }
+    while (right + 1 <= maxX && match(right + 1, y)) { right++; paint(right, y); filled++ }
 
-    // Fill the span and check rows above/below
-    let aboveAdded = false
-    let belowAdded = false
-    for (let cx = left; cx <= right; cx++) {
-      visited.add(`${cx},${y}`)
-      writePixel(cx, y)
-
-      // Check above
-      if (y - 1 >= minY) {
-        const ka = `${cx},${y - 1}`
-        if (!visited.has(ka) && colorsMatch(readPixel(cx, y - 1), seedColor, FILL_TOLERANCE)) {
-          if (!aboveAdded) { stack.push([cx, y - 1]); aboveAdded = true }
-        } else { aboveAdded = false }
-      }
-
-      // Check below
-      if (y + 1 <= maxY) {
-        const kb = `${cx},${y + 1}`
-        if (!visited.has(kb) && colorsMatch(readPixel(cx, y + 1), seedColor, FILL_TOLERANCE)) {
-          if (!belowAdded) { stack.push([cx, y + 1]); belowAdded = true }
-        } else { belowAdded = false }
+    // Check rows above and below — push one seed per contiguous span
+    for (const ny of [y - 1, y + 1]) {
+      if (ny < minY || ny > maxY) continue
+      let inSpan = false
+      for (let cx = left; cx <= right; cx++) {
+        if (match(cx, ny)) {
+          if (!inSpan) {
+            if (sp + 2 > stack.length || filled >= FILL_MAX_PIXELS) break
+            stack[sp] = cx; stack[sp + 1] = ny; sp += 2
+            inSpan = true
+          }
+        } else { inSpan = false }
       }
     }
   }
 
-  // Flush all modified tile imageData back
-  tileCache.forEach(({ ctx, imageData }) => {
-    ctx.putImageData(imageData, 0, 0)
-  })
+  // Flush
+  cache.forEach(({ ctx, id }) => ctx.putImageData(id, 0, 0))
 }
 
 // ─── INFINITE CANVAS SYSTEM ───
