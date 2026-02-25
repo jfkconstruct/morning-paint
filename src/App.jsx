@@ -563,13 +563,14 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const vel = Math.max(0, Math.min(velocity ?? 0, 1))
   const pr = Math.max(0.0, Math.min(pressure ?? 0.5, 1))
 
-  // Width: steep pressure curve for dramatic thick-thin (~20:1 ratio).
-  // Real brush tip: hairline at light touch, very fat at full press.
-  const prCurve = Math.pow(pr, 2.2)
-  const velFactor = Math.max(0.12, 1 - vel * 0.85)
-  const wBase = size * (0.02 + prCurve * 1.1)
-  const w = Math.max(size * 0.015, wBase * velFactor)
-  const minMinor = Math.max(size * 0.03, w * 0.15)
+  // Width: pressure curve balances dramatic thick-thin with usable mid-range.
+  // pow(1.4) gives ~10:1 ratio with smooth mid-pressure response.
+  // Max width matches other brushes (~1.3x size at full pressure).
+  const prCurve = Math.pow(pr, 1.4)
+  const velFactor = Math.max(0.15, 1 - vel * 0.8)
+  const wBase = size * (0.05 + prCurve * 1.25)
+  const w = Math.max(size * 0.02, wBase * velFactor)
+  const minMinor = Math.max(size * 0.04, w * 0.15)
 
   // Directional width: vertical strokes wider than horizontal (brush anisotropy)
   const angle = Math.atan2(dy, dx)
