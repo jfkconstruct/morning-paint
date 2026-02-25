@@ -560,13 +560,10 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   ctx.save()
   ctx.globalCompositeOperation = 'source-over'
 
-  const drawStartCap = !!from?.startCap
-  const drawEndCap = !!to?.endCap
-
   const dx = to.x - from.x
   const dy = to.y - from.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-  if (dist < 0.03 && !drawStartCap && !drawEndCap) { ctx.restore(); return }
+  if (dist < 0.03) { ctx.restore(); return }
 
   const vel = Math.max(0, Math.min(velocity ?? 0, 1))
   const pFrom = Math.max(0, Math.min(from?.pressure ?? pressure ?? 0.5, 1))
@@ -585,10 +582,10 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
     const azimuth = Number.isFinite(to.azimuthAngle) ? to.azimuthAngle : brushAngle
     const tilt = 1 - altitude / (Math.PI / 2) // 0 = vertical, 1 = flat
     const align = Math.abs(Math.cos(azimuth - brushAngle)) // 1 aligned w/ travel, 0 cross-angle
-    tiltMul = 1 + tilt * (0.04 + (1 - align) * 0.22 - align * 0.06)
-    tiltMul = Math.max(0.9, Math.min(1.28, tiltMul))
+    tiltMul = 1 + tilt * (0.02 + (1 - align) * 0.08 - align * 0.03)
+    tiltMul = Math.max(0.95, Math.min(1.08, tiltMul))
   }
-  const minW = Math.max(size * 0.08, 0.45)
+  const minW = Math.max(size * 0.06, 0.35)
   const widthFrom = Math.max(minW, size * (0.08 + Math.pow(pFrom, 0.7) * 0.92) * thin * tiltMul)
   const widthTo = Math.max(minW, size * (0.08 + Math.pow(pTo, 0.7) * 0.92) * thin * tiltMul)
   const hwFrom = widthFrom * 0.5
@@ -617,18 +614,23 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
     ctx.lineTo(r1x, r1y)
     ctx.closePath()
     ctx.fill()
-  }
+    // Tiny join coverage to hide quad seams without visible round beads.
+    const joinR = Math.max(0.18, Math.min(hwTo * 0.22, size * 0.14))
+    ctx.beginPath()
+    ctx.arc(to.x, to.y, joinR, 0, Math.PI * 2)
+    ctx.fill()
 
-  // Caps should only appear at true stroke start/end, not every segment.
-  if (drawStartCap) {
+    // Low-alpha core helps blend micro-gaps between consecutive segments.
+    ctx.save()
+    ctx.globalAlpha *= 0.18
+    ctx.strokeStyle = color
+    ctx.lineWidth = Math.max(minW * 0.55, 0.28)
+    ctx.lineCap = 'round'
     ctx.beginPath()
-    ctx.arc(from.x, from.y, hwFrom, 0, Math.PI * 2)
-    ctx.fill()
-  }
-  if (drawEndCap) {
-    ctx.beginPath()
-    ctx.arc(to.x, to.y, hwTo, 0, Math.PI * 2)
-    ctx.fill()
+    ctx.moveTo(from.x, from.y)
+    ctx.lineTo(to.x, to.y)
+    ctx.stroke()
+    ctx.restore()
   }
 
   ctx.restore()
@@ -1806,7 +1808,6 @@ export default function MorningPaint() {
   const paintPressureRef = useRef(0.5)
   const calligraphyPressureRef = useRef(0.5)
   const calligraphyAngleRef = useRef(null)
-  const calligraphyStartedRef = useRef(false)
   const pointerTypeRef = useRef('mouse')
 
   // Adaptive EMA smoothing: fast strokes = minimal smoothing, slow = heavy
@@ -2254,7 +2255,6 @@ export default function MorningPaint() {
     paintPressureRef.current = lastPressureRef.current
     calligraphyPressureRef.current = lastPressureRef.current
     calligraphyAngleRef.current = null
-    calligraphyStartedRef.current = false
     emaRef.current = { x: 0, y: 0, vx: 0, vy: 0, lastTime: 0 }
     splineBufferRef.current = []
     velocityRef.current = 0
@@ -2391,7 +2391,13 @@ export default function MorningPaint() {
       const delta = pressure - paintPressureRef.current
       if (Math.abs(delta) > maxStep) pressure = paintPressureRef.current + Math.sign(delta) * maxStep
       if (isPen && Math.abs(delta) < 0.008) pressure = paintPressureRef.current
-      if (isPen) pressure = 0.08 + pressure * 0.28
+      if (isPen) {
+        if (curBrush === 'calligraphy') {
+          pressure = Math.max(0.05, Math.min(1, Math.pow(pressure, 0.92)))
+        } else {
+          pressure = 0.08 + pressure * 0.28
+        }
+      }
       paintPressureRef.current = pressure
       const wp = smoothPoint(rawWp, pressure)
       const vel = Math.min(velocityRef.current / 3.0, 1.0)
@@ -2452,10 +2458,6 @@ export default function MorningPaint() {
             azimuthAngle: penMeta.azimuthAngle,
           }
 
-          if (!calligraphyStartedRef.current) {
-            segFrom.startCap = true
-            calligraphyStartedRef.current = true
-          }
         }
 
         if (useBuffer) {
@@ -2555,13 +2557,13 @@ export default function MorningPaint() {
               azimuthAngle: p2.azimuthAngle ?? 0,
             }
             // Avoid long terminal spikes on fast lift.
-            if (tailVel < 0.45 && basePressure >= 0.18) {
-              const tailLen = Math.max(0.25, size * 0.18 * (0.25 + basePressure))
+            if (tailVel < 0.5 && basePressure >= 0.1) {
+              const tailLen = Math.max(0.12, size * 0.16 * (0.2 + basePressure))
               const steps = 3
               let prev = terminalPoint
               for (let i = 1; i <= steps; i++) {
                 const t = i / steps
-                const pr = Math.max(0.12, basePressure * Math.pow(1 - t, 1.6))
+                const pr = Math.max(0.03, basePressure * Math.pow(1 - t, 1.9))
                 const pt = {
                   x: p2.x + ux * tailLen * t,
                   y: p2.y + uy * tailLen * t,
@@ -2570,14 +2572,10 @@ export default function MorningPaint() {
                   pointerType,
                   altitudeAngle: terminalPoint.altitudeAngle,
                   azimuthAngle: terminalPoint.azimuthAngle,
-                  endCap: i === steps,
                 }
                 paintToBuffer(strokeBufRef.current, prev, pt, color, size, pr, tailVel, strokeCalligraphy)
                 prev = pt
               }
-            } else {
-              const capPoint = { ...terminalPoint, endCap: true }
-              paintToBuffer(strokeBufRef.current, terminalPoint, capPoint, color, size, basePressure, tailVel, strokeCalligraphy)
             }
           }
         }
@@ -2622,7 +2620,6 @@ export default function MorningPaint() {
     velocityRef.current = 0
     calligraphyPressureRef.current = 0.5
     calligraphyAngleRef.current = null
-    calligraphyStartedRef.current = false
     panRef.current.active = false
     if (pointersRef.current.size < 2) pinchRef.current.active = false
     showToolbar()
