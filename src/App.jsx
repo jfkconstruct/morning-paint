@@ -598,7 +598,7 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
 
   // Subtle core line to reduce gaps between stamps
   ctx.save()
-  ctx.globalAlpha *= 0.15
+  ctx.globalAlpha *= 0.2
   ctx.strokeStyle = color
   ctx.lineWidth = Math.max(minMinor * 0.6, size * 0.02)
   ctx.lineCap = 'round'
