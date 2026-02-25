@@ -24,10 +24,10 @@ const MONO = "'SF Mono', 'Menlo', 'Courier New', monospace"
 // Tuned for Apple Pencil (4096 levels) natural hand dynamics
 const PRESSURE_CURVE = [
   { in: 0.0, out: 0.0 },
-  { in: 0.1, out: 0.15 },
-  { in: 0.3, out: 0.35 },
-  { in: 0.5, out: 0.55 },
-  { in: 0.75, out: 0.82 },
+  { in: 0.1, out: 0.2 },
+  { in: 0.3, out: 0.42 },
+  { in: 0.5, out: 0.62 },
+  { in: 0.75, out: 0.86 },
   { in: 1.0, out: 1.0 },
 ]
 
@@ -41,6 +41,10 @@ function mapPressure(raw) {
     }
   }
   return raw
+}
+
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v))
 }
 
 // ─── KUBELKA-MUNK COLOR MIXING ───
@@ -2147,18 +2151,26 @@ export default function MorningPaint() {
 
   const getPointerPressure = useCallback((e, from, to) => {
     if (e.pointerType === 'pen' && e.pressure > 0) {
-      const mapped = mapPressure(e.pressure)
-      const smoothed = lastPressureRef.current * 0.15 + mapped * 0.85
+      const mapped = clamp01(Math.pow(mapPressure(e.pressure), 0.82))
+      // Felt should be steadier (less jagged pressure wobble)
+      const emaIn = brushRef.current === 'felt' ? 0.18 : 0.28
+      let smoothed = lastPressureRef.current * (1 - emaIn) + mapped * emaIn
+      const delta = smoothed - lastPressureRef.current
+      const maxStep = brushRef.current === 'felt' ? 0.035 : 0.055
+      if (Math.abs(delta) > maxStep) smoothed = lastPressureRef.current + Math.sign(delta) * maxStep
       lastPressureRef.current = smoothed
       return smoothed
     }
-    if (!from || !to) return 0.35
+    if (!from || !to) return 0.2
     const dx = to.x - from.x
     const dy = to.y - from.y
     const speed = Math.sqrt(dx * dx + dy * dy)
-    const simulated = Math.max(0.15, Math.min(0.5, 0.5 - speed / 300))
-    lastPressureRef.current = simulated
-    return simulated
+    // Mouse/finger: thinner baseline with modest speed modulation
+    const simulatedRaw = 0.22 - speed / 650
+    const simulated = Math.max(0.08, Math.min(0.32, simulatedRaw))
+    const smoothed = lastPressureRef.current * 0.84 + simulated * 0.16
+    lastPressureRef.current = smoothed
+    return smoothed
   }, [])
 
   const pointersRef = useRef(new Map())
@@ -2197,6 +2209,11 @@ export default function MorningPaint() {
     }
 
     drawingRef.current = true
+    if (e.pointerType === 'pen' && e.pressure > 0) {
+      lastPressureRef.current = clamp01(Math.pow(mapPressure(e.pressure), 0.82))
+    } else {
+      lastPressureRef.current = 0.2
+    }
     emaRef.current = { x: 0, y: 0, vx: 0, vy: 0, lastTime: 0 }
     splineBufferRef.current = []
     velocityRef.current = 0
