@@ -2429,7 +2429,7 @@ export default function MorningPaint() {
         for (let i = 1; i < splinePoints.length; i++) {
           paintSeg(splinePoints[i - 1], splinePoints[i], splinePoints[i].pressure)
         }
-      } else {
+      } else if (buf.length >= 2) {
         paintSeg(lastPosRef.current || wp, wp, pressure)
       }
 
