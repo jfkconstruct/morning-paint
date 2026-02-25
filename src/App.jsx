@@ -47,13 +47,6 @@ function clamp01(v) {
   return Math.max(0, Math.min(1, v))
 }
 
-function shortestAngleDelta(from, to) {
-  let d = to - from
-  if (d > Math.PI) d -= Math.PI * 2
-  if (d < -Math.PI) d += Math.PI * 2
-  return d
-}
-
 // ─── KUBELKA-MUNK COLOR MIXING ───
 // Realistic pigment mixing: blue + yellow = green (not gray)
 function hexToRgb(hex) {
@@ -569,25 +562,16 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const pFrom = Math.max(0, Math.min(from?.pressure ?? pressure ?? 0.5, 1))
   const pTo = Math.max(0, Math.min(to?.pressure ?? pressure ?? 0.5, 1))
 
-  const rawAngle = Math.atan2(dy, dx)
-  const brushAngle = Number.isFinite(to?.angleLag) ? to.angleLag : rawAngle
-  const nx = -Math.sin(brushAngle)
-  const ny = Math.cos(brushAngle)
+  const ux = dx / dist
+  const uy = dy / dist
+  const nx = -uy
+  const ny = ux
 
   // Chinese calligraphy feel: pressure drives width, velocity only trims slightly.
   const thin = Math.max(0.82, 1 - vel * 0.18)
-  let tiltMul = 1
-  if (to?.pointerType === 'pen') {
-    const altitude = Math.max(0.12, Math.min(Math.PI / 2, to.altitudeAngle ?? Math.PI / 2))
-    const azimuth = Number.isFinite(to.azimuthAngle) ? to.azimuthAngle : brushAngle
-    const tilt = 1 - altitude / (Math.PI / 2) // 0 = vertical, 1 = flat
-    const align = Math.abs(Math.cos(azimuth - brushAngle)) // 1 aligned w/ travel, 0 cross-angle
-    tiltMul = 1 + tilt * (0.1 + (1 - align) * 0.45 - align * 0.12)
-    tiltMul = Math.max(0.82, Math.min(1.55, tiltMul))
-  }
   const minW = Math.max(size * 0.05, 0.3)
-  const widthFrom = Math.max(minW, size * (0.08 + Math.pow(pFrom, 0.7) * 0.92) * thin * tiltMul)
-  const widthTo = Math.max(minW, size * (0.08 + Math.pow(pTo, 0.7) * 0.92) * thin * tiltMul)
+  const widthFrom = Math.max(minW, size * (0.08 + Math.pow(pFrom, 0.7) * 0.92) * thin)
+  const widthTo = Math.max(minW, size * (0.08 + Math.pow(pTo, 0.7) * 0.92) * thin)
   const hwFrom = widthFrom * 0.5
   const hwTo = widthTo * 0.5
 
@@ -1792,8 +1776,6 @@ export default function MorningPaint() {
   const rafRef = useRef(null)
   const lastPressureRef = useRef(0.5)
   const paintPressureRef = useRef(0.5)
-  const calligraphyPressureRef = useRef(0.5)
-  const calligraphyAngleRef = useRef(null)
   const pointerTypeRef = useRef('mouse')
 
   // Adaptive EMA smoothing: fast strokes = minimal smoothing, slow = heavy
@@ -2239,8 +2221,6 @@ export default function MorningPaint() {
       lastPressureRef.current = 0.2
     }
     paintPressureRef.current = lastPressureRef.current
-    calligraphyPressureRef.current = lastPressureRef.current
-    calligraphyAngleRef.current = null
     emaRef.current = { x: 0, y: 0, vx: 0, vy: 0, lastTime: 0 }
     splineBufferRef.current = []
     velocityRef.current = 0
@@ -2381,69 +2361,13 @@ export default function MorningPaint() {
       paintPressureRef.current = pressure
       const wp = smoothPoint(rawWp, pressure)
       const vel = Math.min(velocityRef.current / 3.0, 1.0)
-      const penMeta = (() => {
-        if (!isPen) return { altitudeAngle: Math.PI / 2, azimuthAngle: 0 }
-        let altitude = typeof ev.altitudeAngle === 'number' ? ev.altitudeAngle : null
-        let azimuth = typeof ev.azimuthAngle === 'number' ? ev.azimuthAngle : null
-
-        if ((!Number.isFinite(altitude) || altitude === null) && typeof ev.tiltX === 'number' && typeof ev.tiltY === 'number') {
-          const tiltMag = Math.min(89.5, Math.hypot(ev.tiltX, ev.tiltY))
-          altitude = (90 - tiltMag) * Math.PI / 180
-        }
-        if ((!Number.isFinite(azimuth) || azimuth === null) && typeof ev.tiltX === 'number' && typeof ev.tiltY === 'number') {
-          azimuth = Math.atan2(ev.tiltY, ev.tiltX)
-        }
-        if (!Number.isFinite(altitude) || altitude === null) altitude = Math.PI / 2
-        if (!Number.isFinite(azimuth) || azimuth === null) azimuth = 0
-        return { altitudeAngle: altitude, azimuthAngle: azimuth }
-      })()
 
       const paintSeg = (from, to, pr) => {
-        let segFrom = from
-        let segTo = to
-        let segPr = pr
-        if (curBrush === 'calligraphy') {
-          const rawAngle = Math.atan2(to.y - from.y, to.x - from.x)
-          if (Number.isFinite(rawAngle)) {
-            if (calligraphyAngleRef.current === null) {
-              calligraphyAngleRef.current = rawAngle
-            } else {
-              const lag = isPen ? 0.24 : 0.34
-              calligraphyAngleRef.current += shortestAngleDelta(calligraphyAngleRef.current, rawAngle) * lag
-            }
-          }
-
-          const pEma = isPen ? 0.22 : 0.3
-          const prevP = calligraphyPressureRef.current
-          const nextP = prevP * (1 - pEma) + segPr * pEma
-          calligraphyPressureRef.current = nextP
-          segPr = nextP
-
-          const angleLag = calligraphyAngleRef.current ?? rawAngle
-          const pointerType = isPen ? 'pen' : 'mouse'
-          segFrom = {
-            ...from,
-            pressure: prevP,
-            angleLag,
-            pointerType,
-            altitudeAngle: penMeta.altitudeAngle,
-            azimuthAngle: penMeta.azimuthAngle,
-          }
-          segTo = {
-            ...to,
-            pressure: nextP,
-            angleLag,
-            pointerType,
-            altitudeAngle: penMeta.altitudeAngle,
-            azimuthAngle: penMeta.azimuthAngle,
-          }
-        }
-
         if (useBuffer) {
           if (curBrush === 'oil') {
-            paintOilToBuffer(strokeBufRef.current, tilesRef.current, segFrom, segTo, color, size, segPr, vel)
+            paintOilToBuffer(strokeBufRef.current, tilesRef.current, from, to, color, size, pr, vel)
           } else if (curBrush === 'watercolor2') {
-            const touched = depositWatercolorSim(strokeSimRef.current, segFrom, segTo, size, segPr, vel)
+            const touched = depositWatercolorSim(strokeSimRef.current, from, to, size, pr, vel)
             if (touched && touched.size > 0) {
               const dirty = wc2DirtyRef.current
               touched.forEach(k => dirty.add(k))
@@ -2455,14 +2379,14 @@ export default function MorningPaint() {
               }
             }
           } else if (curBrush === 'calligraphy') {
-            paintToBuffer(strokeBufRef.current, segFrom, segTo, color, size, segPr, vel, strokeCalligraphy)
+            paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeCalligraphy)
           } else if (curBrush === 'inkwash') {
-            paintToBuffer(strokeBufRef.current, segFrom, segTo, color, size, segPr, vel, strokeInkWash)
+            paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeInkWash)
           } else {
-            paintToBuffer(strokeBufRef.current, segFrom, segTo, color, size, segPr, vel)
+            paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel)
           }
         } else {
-          paintToTiles(tilesRef.current, segFrom, segTo, brush, color, size, segPr, opacity, vel)
+          paintToTiles(tilesRef.current, from, to, brush, color, size, pr, opacity, vel)
         }
       }
 
@@ -2578,8 +2502,6 @@ export default function MorningPaint() {
     emaRef.current = { x: 0, y: 0, vx: 0, vy: 0, lastTime: 0 }
     splineBufferRef.current = []
     velocityRef.current = 0
-    calligraphyPressureRef.current = 0.5
-    calligraphyAngleRef.current = null
     panRef.current.active = false
     if (pointersRef.current.size < 2) pinchRef.current.active = false
     showToolbar()
