@@ -582,14 +582,11 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   const steps = Math.max(1, Math.ceil(dist / step))
   const major = w * (1.1 + vel * 0.55)
   const minor = Math.max(minMinor, w)
-  const baseAlpha = ctx.globalAlpha
-  for (let i = 0; i <= steps; i++) {
+  // Start at i=1 to avoid double-stamping shared endpoints between segments
+  for (let i = 1; i <= steps; i++) {
     const t = i / steps
     const px = from.x + dx * t
     const py = from.y + dy * t
-    // Soften endpoint stamps to reduce double-stamp darkening; organic variation
-    const endFade = (i === 0 || i === steps) ? 0.7 : 1.0
-    ctx.globalAlpha = baseAlpha * endFade * (0.92 + Math.random() * 0.16)
     ctx.save()
     ctx.translate(px, py)
     ctx.rotate(angle)
