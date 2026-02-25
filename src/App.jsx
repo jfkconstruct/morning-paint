@@ -2456,13 +2456,18 @@ export default function MorningPaint() {
     // Composite stroke buffer onto tiles
     if (wasDrawing && strokeBufRef.current && strokeBufRef.current.size > 0) {
       const bufBrush = strokeBufBrushRef.current
+      const pendingBuf = strokeBufRef.current
+      const pendingSpline = [...splineBufferRef.current]
+      const pendingVel = velocityRef.current
+      strokeBufRef.current = null
+      strokeBufBrushRef.current = null
 
-      // Calligraphy: add a short tapered tail on lift for a pointed finish
-      if (bufBrush === 'calligraphy') {
-        const buf = splineBufferRef.current
-        if (buf.length >= 2) {
-          const p2 = buf[buf.length - 1]
-          const p1 = buf[buf.length - 2]
+      // Defer heavy composite work so next startDraw isn't blocked
+      setTimeout(() => {
+        // Calligraphy: add a short tapered tail on lift for a pointed finish
+        if (bufBrush === 'calligraphy' && pendingSpline.length >= 2) {
+          const p2 = pendingSpline[pendingSpline.length - 1]
+          const p1 = pendingSpline[pendingSpline.length - 2]
           const dx = p2.x - p1.x
           const dy = p2.y - p1.y
           const dist = Math.sqrt(dx * dx + dy * dy)
@@ -2470,7 +2475,7 @@ export default function MorningPaint() {
             const ux = dx / dist
             const uy = dy / dist
             const basePressure = p2.pressure ?? 0.5
-            const tailVel = Math.min(velocityRef.current / 3.0, 1.0)
+            const tailVel = Math.min(pendingVel / 3.0, 1.0)
             // Avoid long terminal spikes on fast lift.
             if (tailVel < 0.55) {
               const tailLen = Math.max(0.4, size * 0.32 * (0.35 + basePressure))
@@ -2480,43 +2485,42 @@ export default function MorningPaint() {
                 const t = i / steps
                 const pt = { x: p2.x + ux * tailLen * t, y: p2.y + uy * tailLen * t }
                 const pr = basePressure * (1 - t)
-                paintToBuffer(strokeBufRef.current, prev, pt, color, size, pr, tailVel, strokeCalligraphy)
+                paintToBuffer(pendingBuf, prev, pt, color, size, pr, tailVel, strokeCalligraphy)
                 prev = pt
               }
             }
           }
         }
-      }
 
-      if (bufBrush === 'watercolor2' && strokeSimRef.current) {
-        stepWatercolorSim(strokeSimRef.current, WC2_STEPS)
-        renderWatercolorSimTiles(strokeSimRef.current, strokeBufRef.current, color)
-        strokeSimRef.current = null
-        wc2DirtyRef.current.clear()
-        wc2LastPreviewRef.current = 0
-      }
+        if (bufBrush === 'watercolor2' && strokeSimRef.current) {
+          stepWatercolorSim(strokeSimRef.current, WC2_STEPS)
+          renderWatercolorSimTiles(strokeSimRef.current, pendingBuf, color)
+          strokeSimRef.current = null
+          wc2DirtyRef.current.clear()
+          wc2LastPreviewRef.current = 0
+        }
 
-      const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA
-        : bufBrush === 'calligraphy' ? INK_COMPOSITE_ALPHA
-          : bufBrush === 'inkwash' ? INKWASH_COMPOSITE_ALPHA
-            : bufBrush === 'watercolor2' ? WC2_COMPOSITE_ALPHA
-              : WC_COMPOSITE_ALPHA
-      compositeBuffer(strokeBufRef.current, tilesRef.current, alpha)
-      strokeBufRef.current = null
-      strokeBufBrushRef.current = null
+        const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA
+          : bufBrush === 'calligraphy' ? INK_COMPOSITE_ALPHA
+            : bufBrush === 'inkwash' ? INKWASH_COMPOSITE_ALPHA
+              : bufBrush === 'watercolor2' ? WC2_COMPOSITE_ALPHA
+                : WC_COMPOSITE_ALPHA
+        compositeBuffer(pendingBuf, tilesRef.current, alpha)
+        scheduleRender()
 
-      // Watercolor: subtle wet edge after a brief delay
-      if (bufBrush === 'watercolor' && wcPathRef.current.length >= 3) {
-        const pathSnap = [...wcPathRef.current]
-        const tiles = tilesRef.current
-        const colorSnap = color
-        const sizeSnap = size
-        const opacitySnap = opacity
-        setTimeout(() => {
-          paintWetEdge(tiles, pathSnap, colorSnap, sizeSnap, opacitySnap)
-          scheduleRender()
-        }, 100)
-      }
+        // Watercolor: subtle wet edge after a brief delay
+        if (bufBrush === 'watercolor' && wcPathRef.current.length >= 3) {
+          const pathSnap = [...wcPathRef.current]
+          const tiles = tilesRef.current
+          const colorSnap = color
+          const sizeSnap = size
+          const opacitySnap = opacity
+          setTimeout(() => {
+            paintWetEdge(tiles, pathSnap, colorSnap, sizeSnap, opacitySnap)
+            scheduleRender()
+          }, 100)
+        }
+      }, 0)
     }
     wcPathRef.current = []
 
