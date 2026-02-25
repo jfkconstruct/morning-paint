@@ -186,6 +186,7 @@ const BRUSHES = [
   { id: 'oil',         label: 'Oil Paint' },
   { id: 'smudge',      label: 'Smudge' },
   { id: 'eraser',      label: 'Eraser' },
+  { id: 'fill',        label: 'Fill' },
 ]
 
 const BRUSH_ICONS = {
@@ -247,6 +248,14 @@ const BRUSH_ICONS = {
       <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/>
       <path d="M22 21H7"/>
       <path d="m5 11 9 9"/>
+    </svg>
+  ),
+  fill: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2a2 2 0 0 0 2.8 0L19 11z"/>
+      <path d="m5 2 5 5"/>
+      <path d="M2 13h15"/>
+      <path d="M22 20.3c0 .8-.7 1.7-1.5 1.7s-1.5-.9-1.5-1.7c0-.8 1.5-2.8 1.5-2.8s1.5 2 1.5 2.8z"/>
     </svg>
   ),
 }
@@ -1032,6 +1041,141 @@ const STROKE_FN = {
   eraser: strokeEraser,
 }
 
+// ─── FLOOD FILL (scanline, tile-aware) ───
+const FILL_TOLERANCE = 32
+
+function getWorldPixel(tiles, wx, wy, tileSize) {
+  const tx = Math.floor(wx / tileSize)
+  const ty = Math.floor(wy / tileSize)
+  const key = `${tx},${ty}`
+  const tile = tiles.get(key)
+  if (!tile) return [0, 0, 0, 0]
+  const lx = wx - tx * tileSize
+  const ly = wy - ty * tileSize
+  const ctx = tile.getContext('2d')
+  const px = ctx.getImageData(lx, ly, 1, 1).data
+  return [px[0], px[1], px[2], px[3]]
+}
+
+function colorsMatch(a, b, tol) {
+  return Math.abs(a[0] - b[0]) <= tol &&
+         Math.abs(a[1] - b[1]) <= tol &&
+         Math.abs(a[2] - b[2]) <= tol &&
+         Math.abs(a[3] - b[3]) <= tol
+}
+
+function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
+  const sx = Math.round(startX)
+  const sy = Math.round(startY)
+  const seedColor = getWorldPixel(tiles, sx, sy, tileSize)
+
+  // Parse fill color
+  const r = parseInt(fillColor.slice(1, 3), 16)
+  const g = parseInt(fillColor.slice(3, 5), 16)
+  const b = parseInt(fillColor.slice(5, 7), 16)
+  const a = Math.round((opacityPct / 100) * 255)
+
+  // Don't fill if seed is already the fill color
+  if (colorsMatch(seedColor, [r, g, b, a], FILL_TOLERANCE)) return
+
+  // Batch pixel writes per tile: Map<key, {ctx, imageData}>
+  const tileCache = new Map()
+  function getTileData(tx, ty) {
+    const key = `${tx},${ty}`
+    if (tileCache.has(key)) return tileCache.get(key)
+    const tile = ensureTile(tiles, key)
+    const ctx = tile.getContext('2d')
+    const imageData = ctx.getImageData(0, 0, tileSize, tileSize)
+    tileCache.set(key, { ctx, imageData })
+    return { ctx, imageData }
+  }
+
+  function readPixel(wx, wy) {
+    const tx = Math.floor(wx / tileSize)
+    const ty = Math.floor(wy / tileSize)
+    const { imageData } = getTileData(tx, ty)
+    const lx = wx - tx * tileSize
+    const ly = wy - ty * tileSize
+    const i = (ly * tileSize + lx) * 4
+    return [imageData.data[i], imageData.data[i + 1], imageData.data[i + 2], imageData.data[i + 3]]
+  }
+
+  function writePixel(wx, wy) {
+    const tx = Math.floor(wx / tileSize)
+    const ty = Math.floor(wy / tileSize)
+    const { imageData } = getTileData(tx, ty)
+    const lx = wx - tx * tileSize
+    const ly = wy - ty * tileSize
+    const i = (ly * tileSize + lx) * 4
+    imageData.data[i] = r
+    imageData.data[i + 1] = g
+    imageData.data[i + 2] = b
+    imageData.data[i + 3] = a
+  }
+
+  // Limit fill region to prevent runaway fills on empty canvas
+  const MAX_SPAN = 4000
+  const minX = sx - MAX_SPAN, maxX = sx + MAX_SPAN
+  const minY = sy - MAX_SPAN, maxY = sy + MAX_SPAN
+
+  // Scanline flood fill
+  const stack = [[sx, sy]]
+  const visited = new Set()
+  visited.add(`${sx},${sy}`)
+
+  while (stack.length > 0) {
+    const [x, y] = stack.pop()
+    if (y < minY || y > maxY) continue
+
+    // Find left edge
+    let left = x
+    while (left - 1 >= minX) {
+      const k = `${left - 1},${y}`
+      if (visited.has(k)) break
+      if (!colorsMatch(readPixel(left - 1, y), seedColor, FILL_TOLERANCE)) break
+      left--
+    }
+
+    // Find right edge
+    let right = x
+    while (right + 1 <= maxX) {
+      const k = `${right + 1},${y}`
+      if (visited.has(k)) break
+      if (!colorsMatch(readPixel(right + 1, y), seedColor, FILL_TOLERANCE)) break
+      right++
+    }
+
+    // Fill the span and check rows above/below
+    let aboveAdded = false
+    let belowAdded = false
+    for (let cx = left; cx <= right; cx++) {
+      visited.add(`${cx},${y}`)
+      writePixel(cx, y)
+
+      // Check above
+      if (y - 1 >= minY) {
+        const ka = `${cx},${y - 1}`
+        if (!visited.has(ka) && colorsMatch(readPixel(cx, y - 1), seedColor, FILL_TOLERANCE)) {
+          if (!aboveAdded) { stack.push([cx, y - 1]); aboveAdded = true }
+        } else { aboveAdded = false }
+      }
+
+      // Check below
+      if (y + 1 <= maxY) {
+        const kb = `${cx},${y + 1}`
+        if (!visited.has(kb) && colorsMatch(readPixel(cx, y + 1), seedColor, FILL_TOLERANCE)) {
+          if (!belowAdded) { stack.push([cx, y + 1]); belowAdded = true }
+        } else { belowAdded = false }
+      }
+    }
+  }
+
+  // Flush all modified tile imageData back
+  tileCache.forEach(({ ctx, imageData }) => {
+    ctx.putImageData(imageData, 0, 0)
+  })
+}
+
 // ─── INFINITE CANVAS SYSTEM ───
 const TILE_SIZE = 2048
 const WC_COMPOSITE_ALPHA = 0.18
@@ -1773,6 +1917,18 @@ export default function MorningPaint() {
     historyRef.current.push(snapshot)
     if (historyRef.current.length > 100) historyRef.current.shift()
 
+    // Fill tool: tap-to-fill, then bail out (no drag needed)
+    if (brushRef.current === 'fill') {
+      floodFill(tilesRef.current, Math.round(wp.x), Math.round(wp.y), color, opacity, TILE_SIZE)
+      drawingRef.current = false
+      setStrokes(s => s + 1)
+      scheduleRender()
+      showToolbar()
+      scheduleHideToolbar()
+      scheduleSave()
+      return
+    }
+
     // Reset watercolor path for wet edge tracking
     wcPathRef.current = []
 
@@ -2068,8 +2224,8 @@ export default function MorningPaint() {
   }, [scheduleRender])
 
   const selectBrush = useCallback((id) => {
-    if (id === 'eraser' || id === 'smudge') {
-      if (brush !== 'eraser' && brush !== 'smudge') prevBrushRef.current = brush
+    if (id === 'eraser' || id === 'smudge' || id === 'fill') {
+      if (brush !== 'eraser' && brush !== 'smudge' && brush !== 'fill') prevBrushRef.current = brush
     }
     setBrush(id)
     brushRef.current = id
@@ -2091,6 +2247,7 @@ export default function MorningPaint() {
       if (key === '5') { selectBrush('charcoal'); return }
       if (key === '6') { selectBrush('oil'); return }
       if (key === '7') { selectBrush('smudge'); return }
+      if (key === 'g') { selectBrush('fill'); return }
       if (key === 'e') { selectBrush(brush === 'eraser' ? prevBrushRef.current : 'eraser'); return }
       if (key === '[') { setSize(s => Math.max(2, s - 2)); return }
       if (key === ']') { setSize(s => Math.min(60, s + 2)); return }
@@ -2154,7 +2311,7 @@ export default function MorningPaint() {
       {/* ─── CANVAS ─── */}
       <div ref={containerRef} style={{
         flex: 1, overflow: 'hidden', position: 'relative',
-        cursor: brush === 'eraser' ? 'cell' : brush === 'smudge' ? 'grab' : 'crosshair',
+        cursor: brush === 'fill' ? 'cell' : brush === 'eraser' ? 'cell' : brush === 'smudge' ? 'grab' : 'crosshair',
         WebkitUserSelect: 'none', userSelect: 'none',
         WebkitTouchCallout: 'none',
       }}>
