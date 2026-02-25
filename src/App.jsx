@@ -348,53 +348,58 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
 
   if (dist < 0.2) { ctx.restore(); return }
 
-  const speedFactor = Math.max(0.65, Math.min(1.0, 1.1 - vel * 0.35))
-  const w = size * (0.8 + pressure * 0.4)
-  const stepSize = Math.max(size * 0.3, 4)
+  const speedFactor = Math.max(0.6, Math.min(1.0, 1.15 - vel * 0.4))
+  const w = size * (0.9 + pressure * 0.5)
+  const stepSize = Math.max(size * 0.22, 3)
   const steps = Math.max(Math.floor(dist / stepSize), 1)
-  const jitter = w * 0.3
+  const jitter = w * 0.25
+  const invDist = 1 / dist
 
   // Buffer mode: paint at elevated alpha; entire stroke composited at ~18% on pen-up
   // This ensures uniform opacity per stroke with predictable darkening on overlap
   ctx.globalCompositeOperation = 'source-over'
 
   // Wash body: soft radial gradient blobs that fill in to near-solid in the buffer
-  const washAlpha = (0.06 + pressure * 0.1) * speedFactor
+  const washAlpha = (0.08 + pressure * 0.14) * speedFactor
+  ctx.filter = 'blur(1.2px)'
   for (let i = 0; i <= steps; i++) {
     const t = i / steps
-    const x = from.x + dx * t + (Math.random() - 0.5) * jitter
-    const y = from.y + dy * t + (Math.random() - 0.5) * jitter
+    const along = (Math.random() - 0.5) * w * 0.5
+    const x = from.x + dx * t + (Math.random() - 0.5) * jitter + dx * invDist * along
+    const y = from.y + dy * t + (Math.random() - 0.5) * jitter + dy * invDist * along
     const grain = sampleGrain(x, y)
-    const grainMod = 0.7 + grain * 0.6
+    const grainMod = 0.85 + grain * 0.4
 
-    const r = w * (0.7 + Math.random() * 0.5)
-    const outerR = r * 1.3
+    const r = w * (0.9 + Math.random() * 0.5)
+    const outerR = r * 1.6
     const a = washAlpha * grainMod
 
     const g = ctx.createRadialGradient(x, y, r * 0.1, x, y, outerR)
     g.addColorStop(0,   `rgba(${rgb.r},${rgb.g},${rgb.b},${a})`)
-    g.addColorStop(0.5, `rgba(${rgb.r},${rgb.g},${rgb.b},${a * 0.65})`)
-    g.addColorStop(0.8, `rgba(${rgb.r},${rgb.g},${rgb.b},${a * 0.25})`)
+    g.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${a * 0.55})`)
+    g.addColorStop(0.85, `rgba(${rgb.r},${rgb.g},${rgb.b},${a * 0.22})`)
     g.addColorStop(1,   `rgba(${rgb.r},${rgb.g},${rgb.b},0)`)
     ctx.fillStyle = g
     ctx.beginPath()
     blobPath(ctx, x, y, outerR)
     ctx.fill()
   }
+  ctx.filter = 'none'
 
   // Bloom puddles for organic spread
   if (dist > 4) {
-    const bloomCount = Math.ceil(dist / (size * 1.5))
+    const bloomCount = Math.ceil(dist / (size * 1.1))
     for (let i = 0; i < bloomCount; i++) {
       const t = Math.random()
-      const bx = from.x + dx * t + (Math.random() - 0.5) * w * 0.7
-      const by = from.y + dy * t + (Math.random() - 0.5) * w * 0.7
+      const along = (Math.random() - 0.5) * w * 0.6
+      const bx = from.x + dx * t + (Math.random() - 0.5) * w * 0.7 + dx * invDist * along
+      const by = from.y + dy * t + (Math.random() - 0.5) * w * 0.7 + dy * invDist * along
       const grain = sampleGrain(bx, by)
       const br = w * (0.8 + Math.random() * 0.8)
-      const a = (0.02 + pressure * 0.04) * (0.5 + grain * 0.5) * speedFactor
+      const a = (0.03 + pressure * 0.06) * (0.55 + grain * 0.45) * speedFactor
       const g = ctx.createRadialGradient(bx, by, br * 0.1, bx, by, br)
       g.addColorStop(0,   `rgba(${rgb.r},${rgb.g},${rgb.b},${a})`)
-      g.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${a * 0.4})`)
+      g.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${a * 0.35})`)
       g.addColorStop(1,   `rgba(${rgb.r},${rgb.g},${rgb.b},0)`)
       ctx.fillStyle = g
       ctx.beginPath()
@@ -404,8 +409,8 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
   }
 
   // Edge accent — pigment pooling hint
-  const edgeAlpha = (0.02 + pressure * 0.03) * speedFactor
-  for (let i = 0; i <= steps; i += 2) {
+  const edgeAlpha = (0.008 + pressure * 0.02) * speedFactor
+  for (let i = 0; i <= steps; i += 3) {
     const t = i / steps
     const x = from.x + dx * t + (Math.random() - 0.5) * jitter * 0.5
     const y = from.y + dy * t + (Math.random() - 0.5) * jitter * 0.5
@@ -414,14 +419,14 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
     const r = w * (0.6 + Math.random() * 0.3)
     ctx.globalAlpha = edgeAlpha * (0.5 + grain * 1.0)
     ctx.strokeStyle = color
-    ctx.lineWidth = Math.max(w * 0.08, 1)
+    ctx.lineWidth = Math.max(w * 0.06, 0.8)
     ctx.beginPath()
     blobPath(ctx, x, y, r)
     ctx.stroke()
   }
 
   // Pigment granulation in paper valleys
-  if (dist > 6) {
+  if (dist > 6 && pressure > 0.35) {
     const darkR = Math.max(0, rgb.r - 25)
     const darkG = Math.max(0, rgb.g - 25)
     const darkB = Math.max(0, rgb.b - 25)
@@ -431,11 +436,11 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
       const px = from.x + dx * t + (Math.random() - 0.5) * spread
       const py = from.y + dy * t + (Math.random() - 0.5) * spread
       const pGrain = sampleGrain(px, py)
-      if (pGrain < 0.4) continue
-      ctx.globalAlpha = (0.08 + pressure * 0.12) * pGrain * speedFactor
+      if (pGrain < 0.55) continue
+      ctx.globalAlpha = (0.03 + pressure * 0.06) * pGrain * speedFactor
       ctx.fillStyle = `rgb(${darkR},${darkG},${darkB})`
       ctx.beginPath()
-      ctx.arc(px, py, 0.5 + Math.random() * size * 0.06, 0, Math.PI * 2)
+      ctx.arc(px, py, 0.4 + Math.random() * size * 0.04, 0, Math.PI * 2)
       ctx.fill()
     }
   }
@@ -1167,7 +1172,7 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
 
 // ─── INFINITE CANVAS SYSTEM ───
 const TILE_SIZE = 2048
-const WC_COMPOSITE_ALPHA = 0.18
+const WC_COMPOSITE_ALPHA = 0.22
 const OIL_COMPOSITE_ALPHA = 0.88
 const INK_COMPOSITE_ALPHA = 1.0
 const INKWASH_COMPOSITE_ALPHA = 0.35
