@@ -1443,12 +1443,6 @@ function renderWatercolorSimTiles(simTiles, bufferTiles, color, keys) {
   }
 }
 
-function paintWatercolor2Sim(simTiles, bufferTiles, from, to, color, size, pressure, velocity) {
-  if (!simTiles || !bufferTiles) return
-  const touched = depositWatercolorSim(simTiles, from, to, size, pressure, velocity)
-  renderWatercolorSimTiles(simTiles, bufferTiles, color, touched)
-}
-
 // ─── INFINITE CANVAS SYSTEM ───
 const TILE_SIZE = 2048
 const WC_COMPOSITE_ALPHA = 0.22
@@ -1456,13 +1450,14 @@ const OIL_COMPOSITE_ALPHA = 0.88
 const INK_COMPOSITE_ALPHA = 1.0
 const INKWASH_COMPOSITE_ALPHA = 0.35
 const WC2_COMPOSITE_ALPHA = 1.0
-const WC2_SCALE = 0.25
+const WC2_SCALE = 0.2
 const WC2_TILE_SIZE = Math.floor(TILE_SIZE * WC2_SCALE)
-const WC2_STEPS = 8
-const WC2_WATER_DIFFUSE = 0.22
-const WC2_PIGMENT_DIFFUSE = 0.08
-const WC2_EVAPORATION = 0.03
-const WC2_RENDER_BLUR = 0.6
+const WC2_STEPS = 5
+const WC2_WATER_DIFFUSE = 0.24
+const WC2_PIGMENT_DIFFUSE = 0.09
+const WC2_EVAPORATION = 0.04
+const WC2_RENDER_BLUR = 1.0
+const WC2_PREVIEW_MS = 60
 const MIN_ZOOM = 0.15
 const MAX_ZOOM = 4
 const TOOLBAR_HIDE_DELAY = 2500
@@ -1835,6 +1830,8 @@ export default function MorningPaint() {
   const strokeBufRef = useRef(null)
   const strokeBufBrushRef = useRef(null)
   const strokeSimRef = useRef(null)
+  const wc2DirtyRef = useRef(new Set())
+  const wc2LastPreviewRef = useRef(0)
   const wcPathRef = useRef([])
 
   // Two-finger rewind gesture
@@ -2223,7 +2220,11 @@ export default function MorningPaint() {
     if (b === 'watercolor' || b === 'watercolor2' || b === 'oil' || b === 'calligraphy' || b === 'inkwash') {
       strokeBufRef.current = new Map()
       strokeBufBrushRef.current = b
-      if (b === 'watercolor2') strokeSimRef.current = new Map()
+      if (b === 'watercolor2') {
+        strokeSimRef.current = new Map()
+        wc2DirtyRef.current = new Set()
+        wc2LastPreviewRef.current = 0
+      }
     }
 
     // Don't paint a dot here. The first onDraw will paint from this position.
@@ -2299,7 +2300,17 @@ export default function MorningPaint() {
         if (curBrush === 'oil') {
           paintOilToBuffer(strokeBufRef.current, tilesRef.current, from, to, color, size, pr, vel)
         } else if (curBrush === 'watercolor2') {
-          paintWatercolor2Sim(strokeSimRef.current, strokeBufRef.current, from, to, color, size, pr, vel)
+          const touched = depositWatercolorSim(strokeSimRef.current, from, to, size, pr, vel)
+          if (touched && touched.size > 0) {
+            const dirty = wc2DirtyRef.current
+            touched.forEach(k => dirty.add(k))
+            const now = performance.now()
+            if (now - wc2LastPreviewRef.current >= WC2_PREVIEW_MS) {
+              renderWatercolorSimTiles(strokeSimRef.current, strokeBufRef.current, color, dirty)
+              dirty.clear()
+              wc2LastPreviewRef.current = now
+            }
+          }
         } else if (curBrush === 'calligraphy') {
           paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeCalligraphy)
         } else if (curBrush === 'inkwash') {
@@ -2379,6 +2390,8 @@ export default function MorningPaint() {
         stepWatercolorSim(strokeSimRef.current, WC2_STEPS)
         renderWatercolorSimTiles(strokeSimRef.current, strokeBufRef.current, color)
         strokeSimRef.current = null
+        wc2DirtyRef.current.clear()
+        wc2LastPreviewRef.current = 0
       }
 
       const alpha = bufBrush === 'oil' ? OIL_COMPOSITE_ALPHA
