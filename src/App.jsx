@@ -1,18 +1,7 @@
 // Morning Paint v0.5.1
 // jfk | Infinite canvas painting journal. Morning pages, but with brushes.
 
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import {
-  mapPressure,
-  clamp01,
-  hexToRgb,
-  mixPigments,
-  catmullRomSegment,
-  sampleGrain,
-  getSplineConfig,
-  cloneCanvas,
-} from './lib/paintCore'
-import { saveDirtyTilesToDB, loadTilesFromDB, saveSettings, loadSettings } from './lib/persistence'
+import { useState, useRef, useCallback, useEffect } from 'react'
 
 // ─── TOKENS (Apple-minimal) ───
 const C = {
@@ -29,6 +18,120 @@ const C = {
 }
 const SYS = "system-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif"
 const MONO = "'SF Mono', 'Menlo', 'Courier New', monospace"
+
+// ─── PRESSURE CURVE ───
+// Non-linear mapping: soft start, fast ramp mid-range, plateau at top
+// Tuned for Apple Pencil (4096 levels) natural hand dynamics
+const PRESSURE_CURVE = [
+  { in: 0.0, out: 0.0 },
+  { in: 0.1, out: 0.2 },
+  { in: 0.3, out: 0.42 },
+  { in: 0.5, out: 0.62 },
+  { in: 0.75, out: 0.86 },
+  { in: 1.0, out: 1.0 },
+]
+
+function mapPressure(raw) {
+  for (let i = 0; i < PRESSURE_CURVE.length - 1; i++) {
+    const a = PRESSURE_CURVE[i]
+    const b = PRESSURE_CURVE[i + 1]
+    if (raw >= a.in && raw <= b.in) {
+      const t = (raw - a.in) / (b.in - a.in)
+      return a.out + t * (b.out - a.out)
+    }
+  }
+  return raw
+}
+
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v))
+}
+
+// ─── KUBELKA-MUNK COLOR MIXING ───
+// Realistic pigment mixing: blue + yellow = green (not gray)
+function hexToRgb(hex) {
+  const h = hex.replace('#', '')
+  return { r: parseInt(h.substring(0, 2), 16), g: parseInt(h.substring(2, 4), 16), b: parseInt(h.substring(4, 6), 16) }
+}
+
+function rgbToKS(r, g, b) {
+  const R = r / 255, G = g / 255, B = b / 255
+  return {
+    r: (1 - R) * (1 - R) / (2 * R + 0.001),
+    g: (1 - G) * (1 - G) / (2 * G + 0.001),
+    b: (1 - B) * (1 - B) / (2 * B + 0.001),
+  }
+}
+
+function ksToRgb(kr, kg, kb) {
+  return {
+    r: Math.max(0, Math.min(255, (1 + kr - Math.sqrt(kr * kr + 2 * kr)) * 255)),
+    g: Math.max(0, Math.min(255, (1 + kg - Math.sqrt(kg * kg + 2 * kg)) * 255)),
+    b: Math.max(0, Math.min(255, (1 + kb - Math.sqrt(kb * kb + 2 * kb)) * 255)),
+  }
+}
+
+function mixPigments(c1, c2, ratio) {
+  const ks1 = rgbToKS(c1.r, c1.g, c1.b)
+  const ks2 = rgbToKS(c2.r, c2.g, c2.b)
+  return ksToRgb(
+    ks1.r * ratio + ks2.r * (1 - ratio),
+    ks1.g * ratio + ks2.g * (1 - ratio),
+    ks1.b * ratio + ks2.b * (1 - ratio),
+  )
+}
+
+// ─── CATMULL-ROM SPLINE ───
+// Centripetal variant: smooth curves without loops/cusps
+function catmullRomSegment(p0, p1, p2, p3, segments) {
+  const result = []
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments
+    const t2 = t * t
+    const t3 = t2 * t
+    result.push({
+      x: 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+      y: 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
+      pressure: 0.5 * ((2 * p1.pressure) + (-p0.pressure + p2.pressure) * t + (2 * p0.pressure - 5 * p1.pressure + 4 * p2.pressure - p3.pressure) * t2 + (-p0.pressure + 3 * p1.pressure - 3 * p2.pressure + p3.pressure) * t3),
+    })
+  }
+  return result
+}
+
+// ─── PAPER GRAIN TEXTURE ───
+// Procedural height map for charcoal/pastel interaction
+// Pre-computed Float32Array for fast per-pixel lookup (no getImageData per sample)
+const GRAIN_SIZE = 256
+let _grainData = null
+
+function getGrainData() {
+  if (_grainData) return _grainData
+  _grainData = new Float32Array(GRAIN_SIZE * GRAIN_SIZE)
+  for (let i = 0; i < GRAIN_SIZE * GRAIN_SIZE; i++) {
+    _grainData[i] = Math.random() * 0.4 + 0.3
+  }
+  return _grainData
+}
+
+function sampleGrain(wx, wy) {
+  const data = getGrainData()
+  const gx = ((Math.floor(wx) % GRAIN_SIZE) + GRAIN_SIZE) % GRAIN_SIZE
+  const gy = ((Math.floor(wy) % GRAIN_SIZE) + GRAIN_SIZE) % GRAIN_SIZE
+  return data[gy * GRAIN_SIZE + gx]
+}
+
+function getSplineConfig(brushId, isPen) {
+  if (brushId === 'inkwash') {
+    return isPen ? { min: 3, max: 10, divisor: 2.8 } : { min: 2, max: 8, divisor: 3.2 }
+  }
+  if (brushId === 'felt') {
+    return isPen ? { min: 4, max: 12, divisor: 2.4 } : { min: 3, max: 10, divisor: 2.8 }
+  }
+  if (brushId === 'watercolor' || brushId === 'watercolor2') {
+    return isPen ? { min: 5, max: 14, divisor: 2.2 } : { min: 4, max: 12, divisor: 2.6 }
+  }
+  return isPen ? { min: 6, max: 18, divisor: 1.9 } : { min: 5, max: 14, divisor: 2.2 }
+}
 
 // ─── COLORING PAGE GALLERY ───
 const COLORING_PAGES = [
@@ -378,12 +481,11 @@ function strokeWatercolor(ctx, from, to, color, size, pressure, velocity) {
 
 // Watercolor wet edge: darken the boundary of a completed stroke
 // Real watercolor pools pigment at edges as water evaporates
-function paintWetEdge(tiles, path, color, size, opacity, onTileTouch) {
-  if (path.length < 3) return new Set()
+function paintWetEdge(tiles, path, color, size, opacity) {
+  if (path.length < 3) return
   const rgb = hexToRgb(color)
   const edgeAlpha = 0.015
   const edgeWidth = size * 0.1
-  const touched = new Set()
 
   // Walk both sides of the stroke path, painting thin dark lines offset from center
   for (let side = -1; side <= 1; side += 2) {
@@ -421,7 +523,6 @@ function paintWetEdge(tiles, path, color, size, opacity, onTileTouch) {
       for (let tx = tMinX; tx <= tMaxX; tx++) {
         for (let ty = tMinY; ty <= tMaxY; ty++) {
           const key = `${tx},${ty}`
-          if (onTileTouch) onTileTouch(key)
           const tile = ensureTile(tiles, key)
           const ctx = tile.getContext('2d')
           ctx.save()
@@ -438,12 +539,10 @@ function paintWetEdge(tiles, path, color, size, opacity, onTileTouch) {
           ctx.stroke()
 
           ctx.restore()
-          touched.add(key)
         }
       }
     }
   }
-  return touched
 }
 
 
@@ -781,7 +880,7 @@ function strokeOil(ctx, from, to, color, size, pressure, velocity, sampleCtx) {
       const mixed = mixPigments(baseRgb, existing, 1.0 - pickupAmt)
       bodyRgb = { r: clamp(mixed.r), g: clamp(mixed.g), b: clamp(mixed.b) }
     }
-  } catch {
+  } catch (_) {
     for (let b = 0; b < OIL_BRISTLE_COUNT; b++) bristleColors.push(null)
   }
 
@@ -933,7 +1032,7 @@ function strokeSmudge(ctx, from, to, _color, size, pressure) {
         count++
       }
     }
-  } catch { ctx.restore(); return }
+  } catch (_) { ctx.restore(); return }
 
   if (count < 3 || sa / count < 10) { ctx.restore(); return }
 
@@ -1017,10 +1116,9 @@ const FILL_TRANSPARENT_ALPHA = 24
 const FILL_TRANSPARENT_TOLERANCE_MULT = 2.2
 const FILL_MAX_PIXELS = 800000  // hard cap to stay responsive
 
-function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize, onTileTouch) {
+function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
   const sx = Math.round(startX)
   const sy = Math.round(startY)
-  const touchedTiles = new Set()
 
   // Parse fill color
   const fr = parseInt(fillColor.slice(1, 3), 16)
@@ -1039,7 +1137,7 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize, onTil
       const tile = ensureTile(tiles, key)
       const ctx = tile.getContext('2d')
       const id = ctx.getImageData(0, 0, tileSize, tileSize)
-      entry = { key, ctx, data: id.data, id, ox: tx * tileSize, oy: ty * tileSize }
+      entry = { ctx, data: id.data, id, ox: tx * tileSize, oy: ty * tileSize }
       cache.set(key, entry)
     }
     return entry
@@ -1084,13 +1182,16 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize, onTil
     const db = sb - fb
     const da = sa - fa
     const dist = dr * dr + dg * dg + db * db + da * da * FILL_ALPHA_WEIGHT
-    if (dist <= colorTolSq) return touchedTiles
+    if (dist <= colorTolSq) return
   }
 
   // Match check — inline for speed (no array alloc)
   function match(wx, wy) {
     const e = tileData(wx, wy)
     const i = idx(e, wx, wy)
+    const dr = e.data[i] - sr
+    const dg = e.data[i + 1] - sg
+    const db = e.data[i + 2] - sb
     const a = e.data[i + 3] / 255
     const pr = e.data[i] * a
     const pg = e.data[i + 1] * a
@@ -1109,10 +1210,6 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize, onTil
   // Write pixel — also serves as "visited" marker (pixel no longer matches seed)
   function paint(wx, wy) {
     const e = tileData(wx, wy)
-    if (!touchedTiles.has(e.key)) {
-      touchedTiles.add(e.key)
-      if (onTileTouch) onTileTouch(e.key)
-    }
     const i = idx(e, wx, wy)
     e.data[i] = fr; e.data[i + 1] = fg; e.data[i + 2] = fb; e.data[i + 3] = fa
   }
@@ -1128,7 +1225,7 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize, onTil
   let filled = 0
 
   // Seed must match
-  if (!match(sx, sy)) return touchedTiles
+  if (!match(sx, sy)) return
 
   paint(sx, sy)
   filled++
@@ -1163,7 +1260,6 @@ function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize, onTil
 
   // Flush
   cache.forEach(({ ctx, id }) => ctx.putImageData(id, 0, 0))
-  return touchedTiles
 }
 
 // ─── WATERCOLOR V2 (per-stroke low-res sim) ───
@@ -1420,7 +1516,7 @@ function ensureTile(tiles, key) {
   return c
 }
 
-function paintToTiles(tiles, from, to, brush, color, size, pressure, opacity, velocity, onTileTouch) {
+function paintToTiles(tiles, from, to, brush, color, size, pressure, opacity, velocity) {
   const strokeFn = STROKE_FN[brush]
   if (!strokeFn) return
 
@@ -1440,7 +1536,6 @@ function paintToTiles(tiles, from, to, brush, color, size, pressure, opacity, ve
   for (let tx = tMinX; tx <= tMaxX; tx++) {
     for (let ty = tMinY; ty <= tMaxY; ty++) {
       const key = `${tx},${ty}`
-      if (onTileTouch) onTileTouch(key)
       const tile = ensureTile(tiles, key)
       const ctx = tile.getContext('2d')
       ctx.save()
@@ -1513,23 +1608,109 @@ function paintOilToBuffer(bufferTiles, realTiles, from, to, color, size, pressur
 }
 
 // Composite buffer tiles onto real tiles at a fixed alpha
-function compositeBuffer(bufferTiles, destTiles, alpha, onTileTouch) {
-  const touched = new Set()
+function compositeBuffer(bufferTiles, destTiles, alpha) {
   bufferTiles.forEach((bufTile, key) => {
-    if (onTileTouch) onTileTouch(key)
     const dest = ensureTile(destTiles, key)
     const ctx = dest.getContext('2d')
     ctx.save()
     ctx.globalAlpha = alpha
     ctx.drawImage(bufTile, 0, 0)
     ctx.restore()
-    touched.add(key)
   })
-  return touched
 }
 
-// ─── PERSISTENCE ───
+// ─── PERSISTENCE (IndexedDB for tiles, localStorage for settings) ───
+const DB_NAME = 'morning-paint'
+const DB_VERSION = 1
+const TILE_STORE = 'tiles'
 const SAVE_DEBOUNCE_MS = 2000
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result
+      if (!db.objectStoreNames.contains(TILE_STORE)) {
+        db.createObjectStore(TILE_STORE)
+      }
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+function saveTilesToDB(tiles) {
+  if (tiles.size === 0) return Promise.resolve()
+  return openDB().then(db => {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(TILE_STORE, 'readwrite')
+      const store = tx.objectStore(TILE_STORE)
+      store.clear()
+      let pending = tiles.size
+      if (pending === 0) { resolve(); return }
+      tiles.forEach((canvas, key) => {
+        canvas.toBlob(blob => {
+          store.put(blob, key)
+          pending--
+          if (pending === 0) resolve()
+        }, 'image/png')
+      })
+      tx.onerror = () => reject(tx.error)
+    })
+  }).catch(() => {})
+}
+
+function loadTilesFromDB() {
+  return openDB().then(db => {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(TILE_STORE, 'readonly')
+      const store = tx.objectStore(TILE_STORE)
+      const req = store.openCursor()
+      const tiles = new Map()
+      let count = 0
+      req.onsuccess = (e) => {
+        const cursor = e.target.result
+        if (!cursor) {
+          if (count === 0) { resolve(null); return }
+          resolve(tiles)
+          return
+        }
+        count++
+        const key = cursor.key
+        const blob = cursor.value
+        const img = new Image()
+        const url = URL.createObjectURL(blob)
+        img.onload = () => {
+          const c = document.createElement('canvas')
+          c.width = TILE_SIZE
+          c.height = TILE_SIZE
+          c.getContext('2d').drawImage(img, 0, 0)
+          URL.revokeObjectURL(url)
+          tiles.set(key, c)
+          cursor.continue()
+        }
+        img.onerror = () => { URL.revokeObjectURL(url); cursor.continue() }
+        img.src = url
+      }
+      req.onerror = () => reject(req.error)
+    })
+  }).catch(() => null)
+}
+
+function clearTilesDB() {
+  return openDB().then(db => {
+    const tx = db.transaction(TILE_STORE, 'readwrite')
+    tx.objectStore(TILE_STORE).clear()
+  }).catch(() => {})
+}
+
+function saveSettings(obj) {
+  try { localStorage.setItem('mp-settings', JSON.stringify(obj)) } catch {}
+}
+
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem('mp-settings')) } catch { return null }
+}
 
 // ─── SAVE HELPERS ───
 function exportPNG(tiles, paperBg, bgImage, bgImagePos, bgOpacityPct) {
@@ -1599,8 +1780,9 @@ export default function MorningPaint() {
   const tilesRef = useRef(new Map())
   const containerRef = useRef(null)
 
-  // Load persisted settings once at mount for initial state.
-  const saved = useMemo(() => loadSettings(), [])
+  // Load persisted settings before any hooks that depend on them
+  const savedRef = useRef(loadSettings())
+  const saved = savedRef.current
   const initView = saved?.view || { ox: -500, oy: -500, zoom: 1 }
   const viewRef = useRef(initView)
   const [viewState, setViewState] = useState(initView)
@@ -1612,6 +1794,7 @@ export default function MorningPaint() {
   const historyRef = useRef([])
   const rafRef = useRef(null)
   const lastPressureRef = useRef(0.5)
+  const paintPressureRef = useRef(0.5)
   const pointerTypeRef = useRef('mouse')
 
   // Adaptive EMA smoothing: fast strokes = minimal smoothing, slow = heavy
@@ -1621,7 +1804,7 @@ export default function MorningPaint() {
   // Catmull-Rom: ring buffer of last 4 world-space points with pressure
   const splineBufferRef = useRef([])
 
-  const smoothPoint = useCallback((raw, pressure, brushId = 'felt') => {
+  const smoothPoint = useCallback((raw, pressure) => {
     const ema = emaRef.current
     const now = performance.now()
     const dt = ema.lastTime ? (now - ema.lastTime) : 16
@@ -1641,8 +1824,8 @@ export default function MorningPaint() {
 
     // Adaptive alpha: fast = near-raw, slow = heavy smoothing
     // Watercolor gets extra smoothing for that flowing, liquid feel
-    const isFlowBrush = brushId === 'watercolor' || brushId === 'watercolor2' || brushId === 'inkwash'
-    const isFelt = brushId === 'felt'
+    const isFlowBrush = brushRef.current === 'watercolor' || brushRef.current === 'watercolor2' || brushRef.current === 'inkwash'
+    const isFelt = brushRef.current === 'felt'
     const isPen = pointerTypeRef.current === 'pen'
     const minAlpha = isFlowBrush ? 0.2 : (isPen && isFelt ? 0.22 : (isPen ? 0.28 : 0.4))
     const maxAlpha = isFlowBrush ? 0.68 : (isPen && isFelt ? 0.66 : (isPen ? 0.72 : 0.9))
@@ -1672,6 +1855,7 @@ export default function MorningPaint() {
 
   // Tool state (restored from localStorage on mount)
   const [brush, setBrush] = useState(saved?.brush || 'watercolor')
+  const brushRef = useRef(saved?.brush || 'watercolor')
   const [color, setColor] = useState(saved?.color || '#1D1D1F')
   const [size, setSize] = useState(saved?.size || 8)
   const [opacity, setOpacity] = useState(saved?.opacity ?? 100)
@@ -1715,58 +1899,16 @@ export default function MorningPaint() {
   const prevBrushRef = useRef('calligraphy')
   const saveTimerRef = useRef(null)
   const restoredRef = useRef(false)
-  const actionBeforeRef = useRef(null)
-  const actionChangedRef = useRef(null)
-  const dirtyTilesRef = useRef(new Set())
-
-  const beginActionDelta = useCallback(() => {
-    actionBeforeRef.current = new Map()
-    actionChangedRef.current = new Set()
-  }, [])
-
-  const trackChangedTile = useCallback((key) => {
-    const before = actionBeforeRef.current
-    const changed = actionChangedRef.current
-    if (!before || !changed) return
-    if (!before.has(key)) {
-      const prev = tilesRef.current.get(key)
-      before.set(key, prev ? cloneCanvas(prev) : null)
-    }
-    changed.add(key)
-  }, [])
-
-  const markDirtyTiles = useCallback((keys) => {
-    if (!keys) return
-    const dirty = dirtyTilesRef.current
-    for (const key of keys) dirty.add(key)
-  }, [])
-
-  const commitActionDelta = useCallback(() => {
-    const before = actionBeforeRef.current
-    const changed = actionChangedRef.current
-    actionBeforeRef.current = null
-    actionChangedRef.current = null
-    if (!before || before.size === 0 || !changed || changed.size === 0) return false
-    historyRef.current.push({ kind: 'delta', before })
-    if (historyRef.current.length > 100) historyRef.current.shift()
-    markDirtyTiles(changed)
-    return true
-  }, [markDirtyTiles])
 
   // Debounced auto-save: tiles to IndexedDB, settings to localStorage
   const persistNow = useCallback(() => {
     saveSettings({
-      brush,
+      brush: brushRef.current,
       color, size, opacity, paper,
       view: viewRef.current,
     })
-    const dirty = dirtyTilesRef.current
-    if (dirty.size === 0) return
-    const pending = new Set(dirty)
-    return saveDirtyTilesToDB(tilesRef.current, pending).then(() => {
-      pending.forEach((key) => dirty.delete(key))
-    })
-  }, [brush, color, size, opacity, paper])
+    saveTilesToDB(tilesRef.current)
+  }, [color, size, opacity, paper])
 
   const scheduleSave = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -1778,10 +1920,9 @@ export default function MorningPaint() {
   useEffect(() => {
     if (restoredRef.current) return
     restoredRef.current = true
-    loadTilesFromDB(TILE_SIZE).then(restored => {
+    loadTilesFromDB().then(restored => {
       if (!restored || restored.size === 0) return
       tilesRef.current = restored
-      dirtyTilesRef.current.clear()
       setStrokes(restored.size)
       setPromptVisible(false)
       // Trigger re-render which calls renderViewport via viewState effect
@@ -1793,7 +1934,12 @@ export default function MorningPaint() {
   useEffect(() => {
     const onHide = () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-      persistNow()
+      saveSettings({
+        brush: brushRef.current,
+        color, size, opacity, paper,
+        view: viewRef.current,
+      })
+      saveTilesToDB(tilesRef.current)
     }
     const onVisChange = () => { if (document.hidden) onHide() }
     window.addEventListener('beforeunload', onHide)
@@ -1804,7 +1950,7 @@ export default function MorningPaint() {
       document.removeEventListener('visibilitychange', onVisChange)
       window.removeEventListener('pagehide', onHide)
     }
-  }, [persistNow])
+  }, [color, size, opacity, paper])
 
   const currentPaper = PAPERS.find(p => p.id === paper) || PAPERS[0]
   const CW = canvasSize.w
@@ -1833,6 +1979,15 @@ export default function MorningPaint() {
     window.addEventListener('resize', measure)
     return () => window.removeEventListener('resize', measure)
   }, [])
+
+  // Set canvas dimensions
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.width = CW
+    canvas.height = CH
+    renderViewport()
+  }, [CW, CH])
 
   // Track fullscreen changes
   useEffect(() => {
@@ -1979,16 +2134,7 @@ export default function MorningPaint() {
       })
       ctx.restore()
     }
-  }, [paper, bgOpacity])
-
-  // Set canvas dimensions
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    canvas.width = CW
-    canvas.height = CH
-    renderViewport()
-  }, [CW, CH, renderViewport])
+  }, [paper, bgOpacity, hasBgImage])
 
   const scheduleRender = useCallback(() => {
     if (rafRef.current) return
@@ -2025,39 +2171,31 @@ export default function MorningPaint() {
 
   const getPointerPressure = useCallback((e, from, to, penOverride = false) => {
     const isPenInput = penOverride || e.pointerType === 'pen' || pointerTypeRef.current === 'pen'
-    const isFlowBrush = brush === 'watercolor' || brush === 'watercolor2' || brush === 'inkwash'
-    let raw
     if (isPenInput) {
       if (e.pressure > 0) {
-        raw = clamp01(Math.pow(mapPressure(e.pressure), 0.9))
-      } else {
-        // Pencil can intermittently report 0 pressure; keep last stable value.
-        raw = lastPressureRef.current
+        const mapped = clamp01(Math.pow(mapPressure(e.pressure), 0.9))
+        // Felt should be steadier (less jagged pressure wobble)
+        const emaIn = brushRef.current === 'felt' ? 0.14 : 0.2
+        let smoothed = lastPressureRef.current * (1 - emaIn) + mapped * emaIn
+        const delta = smoothed - lastPressureRef.current
+        const maxStep = brushRef.current === 'felt' ? 0.028 : 0.04
+        if (Math.abs(delta) > maxStep) smoothed = lastPressureRef.current + Math.sign(delta) * maxStep
+        lastPressureRef.current = smoothed
       }
-    } else {
-      if (!from || !to) raw = 0.2
-      else {
-        const dx = to.x - from.x
-        const dy = to.y - from.y
-        const speed = Math.sqrt(dx * dx + dy * dy)
-        // Mouse/finger: thinner baseline with modest speed modulation
-        const simulatedRaw = 0.22 - speed / 650
-        raw = Math.max(0.08, Math.min(0.32, simulatedRaw))
-      }
+      // Pencil can intermittently report 0 pressure; keep last stable value.
+      return lastPressureRef.current
     }
-
-    // Unified pressure filtering pipeline (all pointer types):
-    // 1) EMA smooth, 2) step clamp, 3) tool-space remap.
-    const emaIn = isPenInput ? (isFlowBrush ? 0.16 : 0.2) : (isFlowBrush ? 0.2 : 0.16)
-    let filtered = lastPressureRef.current * (1 - emaIn) + raw * emaIn
-    const delta = filtered - lastPressureRef.current
-    const maxStep = isPenInput ? (isFlowBrush ? 0.035 : 0.04) : 0.05
-    if (Math.abs(delta) > maxStep) filtered = lastPressureRef.current + Math.sign(delta) * maxStep
-    if (isPenInput && Math.abs(delta) < 0.006) filtered = lastPressureRef.current
-    lastPressureRef.current = filtered
-
-    return isPenInput ? (0.08 + filtered * 0.28) : filtered
-  }, [brush])
+    if (!from || !to) return 0.2
+    const dx = to.x - from.x
+    const dy = to.y - from.y
+    const speed = Math.sqrt(dx * dx + dy * dy)
+    // Mouse/finger: thinner baseline with modest speed modulation
+    const simulatedRaw = 0.22 - speed / 650
+    const simulated = Math.max(0.08, Math.min(0.32, simulatedRaw))
+    const smoothed = lastPressureRef.current * 0.84 + simulated * 0.16
+    lastPressureRef.current = smoothed
+    return smoothed
+  }, [])
 
   const pointersRef = useRef(new Map())
 
@@ -2097,16 +2235,17 @@ export default function MorningPaint() {
 
     drawingRef.current = true
     if (e.pointerType === 'pen' && e.pressure > 0) {
-      lastPressureRef.current = clamp01(Math.pow(mapPressure(e.pressure), 0.9))
+      lastPressureRef.current = clamp01(Math.pow(mapPressure(e.pressure), 0.82))
     } else {
       lastPressureRef.current = 0.2
     }
+    paintPressureRef.current = lastPressureRef.current
     emaRef.current = { x: 0, y: 0, vx: 0, vy: 0, lastTime: 0 }
     splineBufferRef.current = []
     velocityRef.current = 0
     const sp = getScreenPos(e)
     const rawWp = screenToWorld(sp.x, sp.y)
-    const wp = smoothPoint(rawWp, 0.5, brush)
+    const wp = smoothPoint(rawWp, 0.5)
     lastPosRef.current = wp
 
     if (promptVisible) setPromptVisible(false)
@@ -2118,26 +2257,26 @@ export default function MorningPaint() {
     setShowPalette(false)
     setShowPaperMenu(false)
 
-    beginActionDelta()
+    const snapshot = new Map()
+    tilesRef.current.forEach((tile, key) => {
+      const c = document.createElement('canvas')
+      c.width = TILE_SIZE
+      c.height = TILE_SIZE
+      c.getContext('2d').drawImage(tile, 0, 0)
+      snapshot.set(key, c)
+    })
+    historyRef.current.push(snapshot)
+    if (historyRef.current.length > 100) historyRef.current.shift()
 
     // Fill tool: tap-to-fill, then bail out (no drag needed)
-    if (brush === 'fill') {
-      const changed = floodFill(
-        tilesRef.current,
-        Math.round(wp.x),
-        Math.round(wp.y),
-        color,
-        opacity,
-        TILE_SIZE,
-        trackChangedTile
-      )
+    if (brushRef.current === 'fill') {
+      floodFill(tilesRef.current, Math.round(wp.x), Math.round(wp.y), color, opacity, TILE_SIZE)
       drawingRef.current = false
-      const committed = commitActionDelta()
-      if (committed && changed.size > 0) setStrokes(s => s + 1)
+      setStrokes(s => s + 1)
       scheduleRender()
       showToolbar()
       scheduleHideToolbar()
-      if (committed) scheduleSave()
+      scheduleSave()
       return
     }
 
@@ -2145,7 +2284,7 @@ export default function MorningPaint() {
     wcPathRef.current = []
 
     // Initialize stroke buffer for brushes that use buffered compositing
-    const b = brush
+    const b = brushRef.current
     if (b === 'watercolor' || b === 'watercolor2' || b === 'oil' || b === 'calligraphy' || b === 'inkwash') {
       strokeBufRef.current = new Map()
       strokeBufBrushRef.current = b
@@ -2158,7 +2297,7 @@ export default function MorningPaint() {
 
     // Don't paint a dot here. The first onDraw will paint from this position.
     // Painting from→from (same point) causes artifacts (angle=0, dist=1 fallback).
-  }, [brush, color, opacity, screenToWorld, scheduleRender, promptVisible, smoothPoint, showToolbar, scheduleHideToolbar, scheduleSave, beginActionDelta, trackChangedTile, commitActionDelta])
+  }, [brush, color, size, screenToWorld, scheduleRender, promptVisible, getPointerPressure, smoothPoint])
 
   const onDraw = useCallback((e) => {
     e.preventDefault()
@@ -2224,14 +2363,22 @@ export default function MorningPaint() {
 
     // Catmull-Rom interpolation: when we have 4+ points, interpolate through spline
     const useBuffer = strokeBufRef.current !== null
-    const curBrush = brush
+    const curBrush = brushRef.current
 
     for (const ev of drawEvents) {
       const sp = getScreenPos(ev)
       const rawWp = screenToWorld(sp.x, sp.y)
       const isPen = pointerTypeRef.current === 'pen'
-      const pressure = getPointerPressure(ev, lastPosRef.current, rawWp, isPen)
-      const wp = smoothPoint(rawWp, pressure, curBrush)
+      const rawPressure = getPointerPressure(ev, lastPosRef.current, rawWp, isPen)
+      const emaIn = isPen ? 0.12 : 0.3
+      let pressure = paintPressureRef.current * (1 - emaIn) + rawPressure * emaIn
+      const maxStep = isPen ? 0.018 : 0.05
+      const delta = pressure - paintPressureRef.current
+      if (Math.abs(delta) > maxStep) pressure = paintPressureRef.current + Math.sign(delta) * maxStep
+      if (isPen && Math.abs(delta) < 0.008) pressure = paintPressureRef.current
+      if (isPen) pressure = 0.08 + pressure * 0.28
+      paintPressureRef.current = pressure
+      const wp = smoothPoint(rawWp, pressure)
       const vel = Math.min(velocityRef.current / 3.0, 1.0)
 
       const paintSeg = (from, to, pr) => {
@@ -2258,7 +2405,7 @@ export default function MorningPaint() {
             paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel)
           }
         } else {
-          paintToTiles(tilesRef.current, from, to, brush, color, size, pr, opacity, vel, trackChangedTile)
+          paintToTiles(tilesRef.current, from, to, brush, color, size, pr, opacity, vel)
         }
       }
 
@@ -2285,7 +2432,7 @@ export default function MorningPaint() {
       lastPosRef.current = wp
 
       // Collect path for watercolor wet edge (subsample: skip points too close together)
-      if (brush === 'watercolor') {
+      if (brushRef.current === 'watercolor') {
         const wcPath = wcPathRef.current
         const last = wcPath[wcPath.length - 1]
         if (!last || Math.hypot(wp.x - last.x, wp.y - last.y) > size * 0.5) {
@@ -2295,11 +2442,12 @@ export default function MorningPaint() {
     }
 
     scheduleRender()
-  }, [brush, color, size, opacity, screenToWorld, getPointerPressure, scheduleRender, smoothPoint, trackChangedTile])
+  }, [brush, color, size, opacity, screenToWorld, getPointerPressure, scheduleRender, smoothPoint])
 
   const endDraw = useCallback((e) => {
     if (e) pointersRef.current.delete(e.pointerId)
     const wasDrawing = drawingRef.current
+    if (wasDrawing) setStrokes(s => s + 1)
 
     // Composite stroke buffer onto tiles
     if (wasDrawing && strokeBufRef.current && strokeBufRef.current.size > 0) {
@@ -2349,19 +2497,24 @@ export default function MorningPaint() {
           : bufBrush === 'inkwash' ? INKWASH_COMPOSITE_ALPHA
             : bufBrush === 'watercolor2' ? WC2_COMPOSITE_ALPHA
               : WC_COMPOSITE_ALPHA
-      compositeBuffer(strokeBufRef.current, tilesRef.current, alpha, trackChangedTile)
+      compositeBuffer(strokeBufRef.current, tilesRef.current, alpha)
       strokeBufRef.current = null
       strokeBufBrushRef.current = null
 
-      // Watercolor: subtle wet edge integrated into the same undo delta.
+      // Watercolor: subtle wet edge after a brief delay
       if (bufBrush === 'watercolor' && wcPathRef.current.length >= 3) {
-        paintWetEdge(tilesRef.current, wcPathRef.current, color, size, opacity, trackChangedTile)
+        const pathSnap = [...wcPathRef.current]
+        const tiles = tilesRef.current
+        const colorSnap = color
+        const sizeSnap = size
+        const opacitySnap = opacity
+        setTimeout(() => {
+          paintWetEdge(tiles, pathSnap, colorSnap, sizeSnap, opacitySnap)
+          scheduleRender()
+        }, 100)
       }
-      scheduleRender()
     }
     wcPathRef.current = []
-
-    const committed = wasDrawing ? commitActionDelta() : false
 
     drawingRef.current = false
     lastPosRef.current = null
@@ -2372,11 +2525,8 @@ export default function MorningPaint() {
     if (pointersRef.current.size < 2) pinchRef.current.active = false
     showToolbar()
     scheduleHideToolbar()
-    if (committed) {
-      setStrokes(s => s + 1)
-      scheduleSave()
-    }
-  }, [showToolbar, scheduleHideToolbar, color, size, opacity, scheduleRender, scheduleSave, trackChangedTile, commitActionDelta])
+    if (wasDrawing) scheduleSave()
+  }, [showToolbar, scheduleHideToolbar, color, size, opacity, scheduleRender, scheduleSave])
 
   // Scroll to zoom
   useEffect(() => {
@@ -2408,51 +2558,31 @@ export default function MorningPaint() {
 
   const resetCanvas = useCallback(() => {
     if (strokes === 0) return
-    const before = new Map()
-    const changed = new Set()
+    const snapshot = new Map()
     tilesRef.current.forEach((tile, key) => {
-      before.set(key, cloneCanvas(tile))
-      changed.add(key)
+      const c = document.createElement('canvas')
+      c.width = TILE_SIZE
+      c.height = TILE_SIZE
+      c.getContext('2d').drawImage(tile, 0, 0)
+      snapshot.set(key, c)
     })
-    historyRef.current.push({ kind: 'delta', before })
+    historyRef.current.push(snapshot)
     if (historyRef.current.length > 100) historyRef.current.shift()
     tilesRef.current.clear()
-    markDirtyTiles(changed)
     setStrokes(0)
-    scheduleSave()
+    clearTilesDB()
     renderViewport()
-  }, [strokes, renderViewport, markDirtyTiles, scheduleSave])
+  }, [strokes, renderViewport])
 
   const undo = useCallback(() => {
     if (!historyRef.current.length) return
-    const entry = historyRef.current.pop()
-    const changed = new Set()
-
-    if (entry?.kind === 'delta' && entry.before instanceof Map) {
-      entry.before.forEach((tile, key) => {
-        if (tile) tilesRef.current.set(key, cloneCanvas(tile))
-        else tilesRef.current.delete(key)
-        changed.add(key)
-      })
-    } else if (entry instanceof Map) {
-      // Legacy fallback (full snapshots from older sessions).
-      tilesRef.current.forEach((_tile, key) => changed.add(key))
-      tilesRef.current.clear()
-      entry.forEach((tile, key) => {
-        tilesRef.current.set(key, tile)
-        changed.add(key)
-      })
-    }
-
-    markDirtyTiles(changed)
+    const snapshot = historyRef.current.pop()
+    tilesRef.current.clear()
+    snapshot.forEach((tile, key) => tilesRef.current.set(key, tile))
     setStrokes(s => Math.max(0, s - 1))
-    scheduleSave()
     renderViewport()
-  }, [renderViewport, markDirtyTiles, scheduleSave])
-
-  useEffect(() => {
-    undoRef.current = undo
-  }, [undo])
+  }, [renderViewport])
+  undoRef.current = undo
 
   const savePNG = useCallback(() => {
     exportPNG(tilesRef.current, currentPaper.bg, bgImageRef.current, bgImagePosRef.current, bgOpacity)
@@ -2565,6 +2695,7 @@ export default function MorningPaint() {
       if (brush !== 'eraser' && brush !== 'smudge' && brush !== 'fill') prevBrushRef.current = brush
     }
     setBrush(id)
+    brushRef.current = id
   }, [brush])
 
   // Keyboard shortcuts
