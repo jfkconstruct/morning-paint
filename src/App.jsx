@@ -509,15 +509,24 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   ctx.globalCompositeOperation = 'source-over'
 
   const vel = velocity || 0
-  const velFactor = Math.max(0.2, 1 - vel / 3000)
 
-  // Line width: pressure-driven, velocity-thinned
-  const w = size * (0.15 + pressure * 0.85) * velFactor
+  // Width: pressure is primary driver, velocity provides subtle thinning
+  // Floor at 0.6 prevents thin segments from separating into dots
+  const velFactor = Math.max(0.6, 1 - vel / 5000)
+  const w = size * (0.2 + pressure * 0.8) * velFactor
 
-  // Pressure→opacity: light touch = translucent grey (0.25), full press = solid black (1.0)
-  ctx.globalAlpha = 0.25 + pressure * 0.75
+  // Ensure segment overlap: line width must exceed the gap between spline points
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const segDist = Math.sqrt(dx * dx + dy * dy)
+  const lineW = Math.max(w, segDist * 0.8, size * 0.15)
+
+  // Pressure→opacity: light touch = grey wash, full press = solid black
+  // Coupled with pressure^0.6 curve so light strokes fade more aggressively
+  const pressureAlpha = Math.pow(pressure, 0.6)
+  ctx.globalAlpha = 0.25 + pressureAlpha * 0.75
   ctx.strokeStyle = color
-  ctx.lineWidth = Math.max(w, 0.8)
+  ctx.lineWidth = lineW
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
   ctx.beginPath()
@@ -525,30 +534,8 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
   ctx.lineTo(to.x, to.y)
   ctx.stroke()
 
-  // Dry brush: scatter ink fragments at very high speed + low pressure
-  const dryChance = (vel / 4000) * (1 - pressure) * 0.5
-  if (dryChance > 0.05 && w > 2) {
-    const dx = to.x - from.x
-    const dy = to.y - from.y
-    const dist = Math.sqrt(dx * dx + dy * dy) || 1
-    const angle = Math.atan2(dy, dx)
-    const perpX = -Math.sin(angle)
-    const perpY = Math.cos(angle)
-    const fragments = Math.floor(dist * dryChance * 0.3)
-    ctx.fillStyle = color
-    for (let f = 0; f < fragments; f++) {
-      const t = Math.random()
-      const fx = from.x + dx * t + perpX * (Math.random() - 0.5) * w * 1.3
-      const fy = from.y + dy * t + perpY * (Math.random() - 0.5) * w * 1.3
-      ctx.globalAlpha = 0.3 + Math.random() * 0.4
-      ctx.beginPath()
-      ctx.arc(fx, fy, 0.3 + Math.random() * 0.8, 0, Math.PI * 2)
-      ctx.fill()
-    }
-  }
-
   // Rare ink bleed at edges: slow + heavy strokes only
-  if (vel < 400 && pressure > 0.5 && w > 6 && Math.random() < 0.08) {
+  if (vel < 0.15 && pressure > 0.5 && w > 6 && Math.random() < 0.08) {
     const mx = (from.x + to.x) * 0.5
     const my = (from.y + to.y) * 0.5
     const angle = Math.random() * Math.PI * 2
@@ -564,93 +551,80 @@ function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
 }
 
 // Ink Wash: sumi-e diffusion brush
-// Watercolor-style radial gradient blobs, always in grey/black tones.
-// Pressure controls opacity: light = smoky mist, heavy = dark pooling.
-// Wider, softer spread than watercolor. Meant for washes, not line work.
+// Fat calligraphy-style stroke with soft, feathered edges.
+// Pressure controls width + opacity like ink brush, but wider and softer.
+// Soft halo around the core stroke gives the wet-ink-on-paper diffusion look.
 function strokeInkWash(ctx, from, to, color, size, pressure, velocity) {
   ctx.save()
+  ctx.globalCompositeOperation = 'source-over'
+
   const dx = to.x - from.x
   const dy = to.y - from.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-
   if (dist < 0.2) { ctx.restore(); return }
 
   const vel = velocity ?? 1.0
-  const speedFactor = Math.max(0.5, Math.min(1.0, 1.2 - vel * 0.4))
+  const velFactor = Math.max(0.5, 1 - vel / 5000)
 
-  // Ink wash uses wider, softer spread than regular watercolor
-  const w = size * (1.0 + pressure * 0.6)
-  const stepSize = Math.max(size * 0.25, 3)
-  const steps = Math.max(Math.floor(dist / stepSize), 1)
-  const jitter = w * 0.4
-
-  // Force monochrome: extract luminance from chosen color, map to grey
+  // Monochrome: extract luminance from chosen color
   const rgb = hexToRgb(color)
   const lum = Math.round(rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114)
-  const ir = lum, ig = lum, ib = lum
 
-  ctx.globalCompositeOperation = 'source-over'
+  // Core width: wider than ink brush, pressure-driven
+  const coreW = size * (0.4 + pressure * 0.6) * velFactor * 2.5
+  const segDist = dist
+  const lineW = Math.max(coreW, segDist * 0.8, size * 0.3)
 
-  // Pressure→alpha: light = barely visible mist (0.03), heavy = dense pool (0.14)
-  const baseAlpha = (0.03 + pressure * 0.11) * speedFactor
+  // Pressure→opacity for core: softer than ink brush
+  const pressureAlpha = Math.pow(pressure, 0.5)
+  const coreAlpha = 0.15 + pressureAlpha * 0.55
 
-  // Main wash body: soft radial gradient blobs
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps
-    const x = from.x + dx * t + (Math.random() - 0.5) * jitter
-    const y = from.y + dy * t + (Math.random() - 0.5) * jitter
-    const grain = sampleGrain(x, y)
-    const grainMod = 0.6 + grain * 0.8
+  // Layer 1: Soft halo (wide, faint stroke underneath for diffusion edge)
+  const haloW = lineW * 2.2
+  ctx.globalAlpha = coreAlpha * 0.25
+  ctx.strokeStyle = `rgb(${lum},${lum},${lum})`
+  ctx.lineWidth = haloW
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  ctx.moveTo(from.x, from.y)
+  ctx.lineTo(to.x, to.y)
+  ctx.stroke()
 
-    const r = w * (0.8 + Math.random() * 0.6)
-    const outerR = r * 1.5
-    const a = baseAlpha * grainMod
+  // Layer 2: Mid halo (tighter, slightly darker)
+  ctx.globalAlpha = coreAlpha * 0.4
+  ctx.lineWidth = lineW * 1.5
+  ctx.beginPath()
+  ctx.moveTo(from.x, from.y)
+  ctx.lineTo(to.x, to.y)
+  ctx.stroke()
 
-    const g = ctx.createRadialGradient(x, y, r * 0.05, x, y, outerR)
-    g.addColorStop(0,   `rgba(${ir},${ig},${ib},${a})`)
-    g.addColorStop(0.3, `rgba(${ir},${ig},${ib},${a * 0.7})`)
-    g.addColorStop(0.6, `rgba(${ir},${ig},${ib},${a * 0.35})`)
-    g.addColorStop(1,   `rgba(${ir},${ig},${ib},0)`)
-    ctx.fillStyle = g
-    ctx.beginPath()
-    blobPath(ctx, x, y, outerR)
-    ctx.fill()
-  }
+  // Layer 3: Core stroke (solid center, like the ink brush)
+  ctx.globalAlpha = coreAlpha
+  ctx.lineWidth = lineW
+  ctx.beginPath()
+  ctx.moveTo(from.x, from.y)
+  ctx.lineTo(to.x, to.y)
+  ctx.stroke()
 
-  // Diffusion haze: extra-wide, very faint blobs that bleed outward
-  if (dist > 3) {
-    const hazeCount = Math.ceil(dist / (size * 2))
-    for (let i = 0; i < hazeCount; i++) {
+  // Ink granulation along the stroke path (subtle paper texture)
+  if (dist > 3 && pressure > 0.25) {
+    const spread = lineW * 0.6
+    const grainCount = Math.ceil(dist / 4)
+    const darkLum = Math.max(0, lum - 25)
+    ctx.fillStyle = `rgb(${darkLum},${darkLum},${darkLum})`
+    const angle = Math.atan2(dy, dx)
+    const perpX = -Math.sin(angle)
+    const perpY = Math.cos(angle)
+    for (let i = 0; i < grainCount; i++) {
       const t = Math.random()
-      const hx = from.x + dx * t + (Math.random() - 0.5) * w * 1.2
-      const hy = from.y + dy * t + (Math.random() - 0.5) * w * 1.2
-      const hr = w * (1.2 + Math.random() * 1.0)
-      const ha = (0.01 + pressure * 0.03) * speedFactor * (0.4 + sampleGrain(hx, hy) * 0.6)
-      const g = ctx.createRadialGradient(hx, hy, hr * 0.05, hx, hy, hr)
-      g.addColorStop(0,   `rgba(${ir},${ig},${ib},${ha})`)
-      g.addColorStop(0.5, `rgba(${ir},${ig},${ib},${ha * 0.3})`)
-      g.addColorStop(1,   `rgba(${ir},${ig},${ib},0)`)
-      ctx.fillStyle = g
-      ctx.beginPath()
-      blobPath(ctx, hx, hy, hr)
-      ctx.fill()
-    }
-  }
-
-  // Ink granulation in paper valleys (darker specks where ink settles)
-  if (dist > 4 && pressure > 0.3) {
-    const spread = w * 0.7
-    for (let i = 0; i < Math.ceil(dist / 5); i++) {
-      const t = Math.random()
-      const px = from.x + dx * t + (Math.random() - 0.5) * spread
-      const py = from.y + dy * t + (Math.random() - 0.5) * spread
+      const px = from.x + dx * t + perpX * (Math.random() - 0.5) * spread
+      const py = from.y + dy * t + perpY * (Math.random() - 0.5) * spread
       const pGrain = sampleGrain(px, py)
       if (pGrain < 0.45) continue
-      const darkLum = Math.max(0, lum - 30)
-      ctx.globalAlpha = (0.06 + pressure * 0.1) * pGrain * speedFactor
-      ctx.fillStyle = `rgb(${darkLum},${darkLum},${darkLum})`
+      ctx.globalAlpha = (0.04 + pressure * 0.08) * pGrain
       ctx.beginPath()
-      ctx.arc(px, py, 0.4 + Math.random() * size * 0.05, 0, Math.PI * 2)
+      ctx.arc(px, py, 0.3 + Math.random() * size * 0.04, 0, Math.PI * 2)
       ctx.fill()
     }
   }
@@ -1063,7 +1037,7 @@ const TILE_SIZE = 2048
 const WC_COMPOSITE_ALPHA = 0.18
 const OIL_COMPOSITE_ALPHA = 0.88
 const INK_COMPOSITE_ALPHA = 1.0
-const INKWASH_COMPOSITE_ALPHA = 0.22
+const INKWASH_COMPOSITE_ALPHA = 0.35
 const MIN_ZOOM = 0.15
 const MAX_ZOOM = 4
 const TOOLBAR_HIDE_DELAY = 2500
@@ -1180,6 +1154,99 @@ function compositeBuffer(bufferTiles, destTiles, alpha) {
   })
 }
 
+// ─── PERSISTENCE (IndexedDB for tiles, localStorage for settings) ───
+const DB_NAME = 'morning-paint'
+const DB_VERSION = 1
+const TILE_STORE = 'tiles'
+const SAVE_DEBOUNCE_MS = 2000
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result
+      if (!db.objectStoreNames.contains(TILE_STORE)) {
+        db.createObjectStore(TILE_STORE)
+      }
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+function saveTilesToDB(tiles) {
+  if (tiles.size === 0) return Promise.resolve()
+  return openDB().then(db => {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(TILE_STORE, 'readwrite')
+      const store = tx.objectStore(TILE_STORE)
+      store.clear()
+      let pending = tiles.size
+      if (pending === 0) { resolve(); return }
+      tiles.forEach((canvas, key) => {
+        canvas.toBlob(blob => {
+          store.put(blob, key)
+          pending--
+          if (pending === 0) resolve()
+        }, 'image/png')
+      })
+      tx.onerror = () => reject(tx.error)
+    })
+  }).catch(() => {})
+}
+
+function loadTilesFromDB() {
+  return openDB().then(db => {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(TILE_STORE, 'readonly')
+      const store = tx.objectStore(TILE_STORE)
+      const req = store.openCursor()
+      const tiles = new Map()
+      let count = 0
+      req.onsuccess = (e) => {
+        const cursor = e.target.result
+        if (!cursor) {
+          if (count === 0) { resolve(null); return }
+          resolve(tiles)
+          return
+        }
+        count++
+        const key = cursor.key
+        const blob = cursor.value
+        const img = new Image()
+        const url = URL.createObjectURL(blob)
+        img.onload = () => {
+          const c = document.createElement('canvas')
+          c.width = TILE_SIZE
+          c.height = TILE_SIZE
+          c.getContext('2d').drawImage(img, 0, 0)
+          URL.revokeObjectURL(url)
+          tiles.set(key, c)
+          cursor.continue()
+        }
+        img.onerror = () => { URL.revokeObjectURL(url); cursor.continue() }
+        img.src = url
+      }
+      req.onerror = () => reject(req.error)
+    })
+  }).catch(() => null)
+}
+
+function clearTilesDB() {
+  return openDB().then(db => {
+    const tx = db.transaction(TILE_STORE, 'readwrite')
+    tx.objectStore(TILE_STORE).clear()
+  }).catch(() => {})
+}
+
+function saveSettings(obj) {
+  try { localStorage.setItem('mp-settings', JSON.stringify(obj)) } catch {}
+}
+
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem('mp-settings')) } catch { return null }
+}
+
 // ─── SAVE HELPERS ───
 function exportPNG(tiles, paperBg, bgImage, bgImagePos, bgOpacityPct) {
   if (tiles.size === 0) return
@@ -1248,8 +1315,12 @@ export default function MorningPaint() {
   const tilesRef = useRef(new Map())
   const containerRef = useRef(null)
 
-  const viewRef = useRef({ ox: -500, oy: -500, zoom: 1 })
-  const [viewState, setViewState] = useState({ ox: -500, oy: -500, zoom: 1 })
+  // Load persisted settings before any hooks that depend on them
+  const savedRef = useRef(loadSettings())
+  const saved = savedRef.current
+  const initView = saved?.view || { ox: -500, oy: -500, zoom: 1 }
+  const viewRef = useRef(initView)
+  const [viewState, setViewState] = useState(initView)
 
   const drawingRef = useRef(false)
   const lastPosRef = useRef(null)
@@ -1313,12 +1384,12 @@ export default function MorningPaint() {
   const [showLabels, setShowLabels] = useState(false)
   const toolbarHoveredRef = useRef(false)
 
-  // Tool state
-  const [brush, setBrush] = useState('watercolor')
-  const brushRef = useRef('calligraphy')
-  const [color, setColor] = useState('#1D1D1F')
-  const [size, setSize] = useState(8)
-  const [opacity, setOpacity] = useState(100)
+  // Tool state (restored from localStorage on mount)
+  const [brush, setBrush] = useState(saved?.brush || 'watercolor')
+  const brushRef = useRef(saved?.brush || 'watercolor')
+  const [color, setColor] = useState(saved?.color || '#1D1D1F')
+  const [size, setSize] = useState(saved?.size || 8)
+  const [opacity, setOpacity] = useState(saved?.opacity ?? 100)
 
   // Color mixer state
   const [showMixer, setShowMixer] = useState(false)
@@ -1343,7 +1414,7 @@ export default function MorningPaint() {
   // Two-finger rewind gesture
   const rewindRef = useRef({ lastAngle: null, cumulative: 0, undoFired: false })
   const undoRef = useRef(null)
-  const [paper, setPaper] = useState('dots')
+  const [paper, setPaper] = useState(saved?.paper || 'dots')
   const [showPalette, setShowPalette] = useState(false)
   const [showPaperMenu, setShowPaperMenu] = useState(false)
   const [prompt] = useState(() => PROMPTS[Math.floor(Math.random() * PROMPTS.length)])
@@ -1354,6 +1425,60 @@ export default function MorningPaint() {
 
   // Track last brush before eraser for toggle-back
   const prevBrushRef = useRef('calligraphy')
+  const saveTimerRef = useRef(null)
+  const restoredRef = useRef(false)
+
+  // Debounced auto-save: tiles to IndexedDB, settings to localStorage
+  const persistNow = useCallback(() => {
+    saveSettings({
+      brush: brushRef.current,
+      color, size, opacity, paper,
+      view: viewRef.current,
+    })
+    saveTilesToDB(tilesRef.current)
+  }, [color, size, opacity, paper])
+
+  const scheduleSave = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(persistNow, SAVE_DEBOUNCE_MS)
+  }, [persistNow])
+
+  // Restore tiles from IndexedDB on mount
+  // Restore tiles from IndexedDB on mount (runs after first render)
+  useEffect(() => {
+    if (restoredRef.current) return
+    restoredRef.current = true
+    loadTilesFromDB().then(restored => {
+      if (!restored || restored.size === 0) return
+      tilesRef.current = restored
+      setStrokes(restored.size)
+      setPromptVisible(false)
+      // Trigger re-render which calls renderViewport via viewState effect
+      setViewState(v => ({ ...v }))
+    })
+  }, [])
+
+  // Save on page hide / beforeunload (catches SW updates, tab closes, iOS background)
+  useEffect(() => {
+    const onHide = () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      saveSettings({
+        brush: brushRef.current,
+        color, size, opacity, paper,
+        view: viewRef.current,
+      })
+      saveTilesToDB(tilesRef.current)
+    }
+    const onVisChange = () => { if (document.hidden) onHide() }
+    window.addEventListener('beforeunload', onHide)
+    document.addEventListener('visibilitychange', onVisChange)
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('beforeunload', onHide)
+      document.removeEventListener('visibilitychange', onVisChange)
+      window.removeEventListener('pagehide', onHide)
+    }
+  }, [color, size, opacity, paper])
 
   const currentPaper = PAPERS.find(p => p.id === paper) || PAPERS[0]
   const CW = canvasSize.w
@@ -1805,7 +1930,8 @@ export default function MorningPaint() {
     if (pointersRef.current.size < 2) pinchRef.current.active = false
     showToolbar()
     scheduleHideToolbar()
-  }, [showToolbar, scheduleHideToolbar, color, size, opacity, scheduleRender])
+    if (wasDrawing) scheduleSave()
+  }, [showToolbar, scheduleHideToolbar, color, size, opacity, scheduleRender, scheduleSave])
 
   // Scroll to zoom
   useEffect(() => {
@@ -1849,6 +1975,7 @@ export default function MorningPaint() {
     if (historyRef.current.length > 100) historyRef.current.shift()
     tilesRef.current.clear()
     setStrokes(0)
+    clearTilesDB()
     renderViewport()
   }, [strokes, renderViewport])
 
