@@ -590,10 +590,26 @@ function renderCalligraphyStroke(bufferTiles, points, color, size, isComplete) {
     return [pt[0], pt[1], Math.min(1, splayed * dirScale)]
   })
 
+  // Detect entry style from velocity (start only, end always tapers).
+  // Low velocity at start = brush placed then moved (blunt entry).
+  // High velocity at start = brush swept in (tapered entry).
+  const velThreshold = 3
+  const sampleN = Math.min(5, points.length - 1)
+  let startVel = 0
+  for (let i = 1; i <= sampleN; i++) {
+    const dx = points[i][0] - points[i - 1][0]
+    const dy = points[i][1] - points[i - 1][1]
+    startVel += Math.sqrt(dx * dx + dy * dy)
+  }
+  startVel /= sampleN || 1
+  const startTaper = startVel > velThreshold
+
   const outlinePoints = getStroke(enhancedPoints, {
     ...CALLIG_OPTS,
     size: size * tiltScale,
     last: isComplete,
+    start: startTaper ? { taper: true, cap: false } : { taper: false, cap: true },
+    end: { taper: true, cap: false },
   })
   if (outlinePoints.length < 3) return new Set()
 
