@@ -1241,157 +1241,19 @@ const STROKE_FN = {
   eraser: strokeEraser,
 }
 
-// ─── FLOOD FILL (scanline, tile-aware, zero-alloc visited) ───
-const FILL_COLOR_TOLERANCE = 60 // Base Euclidean RGB tolerance
-const FILL_ALPHA_WEIGHT = 0.15  // reduce alpha banding in soft washes
-const FILL_TRANSPARENT_ALPHA = 24
-const FILL_TRANSPARENT_TOLERANCE_MULT = 2.2
-const FILL_MAX_PIXELS = 800000  // hard cap to stay responsive
-
-function floodFill(tiles, startX, startY, fillColor, opacityPct, tileSize) {
-  const sx = Math.round(startX)
-  const sy = Math.round(startY)
-
-  // Parse fill color
-  const fr = parseInt(fillColor.slice(1, 3), 16)
-  const fg = parseInt(fillColor.slice(3, 5), 16)
-  const fb = parseInt(fillColor.slice(5, 7), 16)
-  const fa = Math.round((opacityPct / 100) * 255)
-
-  // Tile imageData cache — lazy load, batch flush at end
-  const cache = new Map()
-  function tileData(wx, wy) {
-    const tx = Math.floor(wx / tileSize)
-    const ty = Math.floor(wy / tileSize)
-    const key = `${tx},${ty}`
-    let entry = cache.get(key)
-    if (!entry) {
-      const tile = ensureTile(tiles, key)
-      const ctx = tile.getContext('2d')
-      const id = ctx.getImageData(0, 0, tileSize, tileSize)
-      entry = { ctx, data: id.data, id, ox: tx * tileSize, oy: ty * tileSize }
-      cache.set(key, entry)
-    }
-    return entry
-  }
-
-  // Inline pixel index into a tile's data array
-  function idx(entry, wx, wy) {
-    return ((wy - entry.oy) * tileSize + (wx - entry.ox)) * 4
-  }
-
-  // Read seed color (3x3 average to reduce grain/banding)
-  let sr = 0, sg = 0, sb = 0, sa = 0, sc = 0
-  for (let oy = -1; oy <= 1; oy++) {
-    for (let ox = -1; ox <= 1; ox++) {
-      const e = tileData(sx + ox, sy + oy)
-      const i = idx(e, sx + ox, sy + oy)
-      sr += e.data[i]
-      sg += e.data[i + 1]
-      sb += e.data[i + 2]
-      sa += e.data[i + 3]
-      sc++
-    }
-  }
-  sr = Math.round(sr / sc)
-  sg = Math.round(sg / sc)
-  sb = Math.round(sb / sc)
-  sa = Math.round(sa / sc)
-
-  const transparency = 1 - (sa / 255)
-  const tol = FILL_COLOR_TOLERANCE * (1 + transparency * (FILL_TRANSPARENT_TOLERANCE_MULT - 1))
-  const colorTolSq = tol * tol
-
-  const seedAlphaNorm = sa / 255
-  const srP = sr * seedAlphaNorm
-  const sgP = sg * seedAlphaNorm
-  const sbP = sb * seedAlphaNorm
-
-  // Don't fill if seed is already the fill color
-  {
-    const dr = sr - fr
-    const dg = sg - fg
-    const db = sb - fb
-    const da = sa - fa
-    const dist = dr * dr + dg * dg + db * db + da * da * FILL_ALPHA_WEIGHT
-    if (dist <= colorTolSq) return
-  }
-
-  // Match check — inline for speed (no array alloc)
-  function match(wx, wy) {
-    const e = tileData(wx, wy)
-    const i = idx(e, wx, wy)
-    const dr = e.data[i] - sr
-    const dg = e.data[i + 1] - sg
-    const db = e.data[i + 2] - sb
-    const a = e.data[i + 3] / 255
-    const pr = e.data[i] * a
-    const pg = e.data[i + 1] * a
-    const pb = e.data[i + 2] * a
-    const pdr = pr - srP
-    const pdg = pg - sgP
-    const pdb = pb - sbP
-    const colorDist = pdr * pdr + pdg * pdg + pdb * pdb
-    if (sa < 8) {
-      return e.data[i + 3] < FILL_TRANSPARENT_ALPHA && colorDist <= colorTolSq
-    }
-    const da = e.data[i + 3] - sa
-    return (colorDist + da * da * FILL_ALPHA_WEIGHT) <= colorTolSq
-  }
-
-  // Write pixel — also serves as "visited" marker (pixel no longer matches seed)
-  function paint(wx, wy) {
-    const e = tileData(wx, wy)
-    const i = idx(e, wx, wy)
-    e.data[i] = fr; e.data[i + 1] = fg; e.data[i + 2] = fb; e.data[i + 3] = fa
-  }
-
-  const MAX_SPAN = 2000
-  const minX = sx - MAX_SPAN, maxX = sx + MAX_SPAN
-  const minY = sy - MAX_SPAN, maxY = sy + MAX_SPAN
-
-  // Scanline stack: [x, y] pairs stored flat for speed
-  const stack = new Int32Array(FILL_MAX_PIXELS * 2)
-  stack[0] = sx; stack[1] = sy
-  let sp = 2  // stack pointer
-  let filled = 0
-
-  // Seed must match
-  if (!match(sx, sy)) return
-
-  paint(sx, sy)
-  filled++
-
-  while (sp > 0 && filled < FILL_MAX_PIXELS) {
-    sp -= 2
-    const x = stack[sp], y = stack[sp + 1]
-
-    // Scan left
-    let left = x
-    while (left - 1 >= minX && match(left - 1, y)) { left--; paint(left, y); filled++ }
-
-    // Scan right
-    let right = x
-    while (right + 1 <= maxX && match(right + 1, y)) { right++; paint(right, y); filled++ }
-
-    // Check rows above and below — push one seed per contiguous span
-    for (const ny of [y - 1, y + 1]) {
-      if (ny < minY || ny > maxY) continue
-      let inSpan = false
-      for (let cx = left; cx <= right; cx++) {
-        if (match(cx, ny)) {
-          if (!inSpan) {
-            if (sp + 2 > stack.length || filled >= FILL_MAX_PIXELS) break
-            stack[sp] = cx; stack[sp + 1] = ny; sp += 2
-            inSpan = true
-          }
-        } else { inSpan = false }
-      }
-    }
-  }
-
-  // Flush
-  cache.forEach(({ ctx, id }) => ctx.putImageData(id, 0, 0))
+// Paint-behind fill: fills color UNDER existing strokes on all existing tiles.
+// Uses destination-over composite so strokes stay on top. Instant, no scanning.
+function paintBehind(tiles, fillColor, opacityPct, tileSize) {
+  const alpha = (opacityPct / 100)
+  tiles.forEach((tile) => {
+    const ctx = tile.getContext('2d')
+    ctx.save()
+    ctx.globalCompositeOperation = 'destination-over'
+    ctx.globalAlpha = alpha
+    ctx.fillStyle = fillColor
+    ctx.fillRect(0, 0, tileSize, tileSize)
+    ctx.restore()
+  })
 }
 
 // ─── WATERCOLOR V2 (per-stroke low-res sim) ───
@@ -2415,9 +2277,9 @@ export default function MorningPaint() {
       if (historyRef.current.length > 100) historyRef.current.shift()
     }, 0)
 
-    // Fill tool: tap-to-fill, then bail out (no drag needed)
+    // Fill tool: paint-behind on all existing tiles (color goes under strokes)
     if (brushRef.current === 'fill') {
-      floodFill(tilesRef.current, Math.round(wp.x), Math.round(wp.y), color, opacity, TILE_SIZE)
+      paintBehind(tilesRef.current, color, opacity, TILE_SIZE)
       drawingRef.current = false
       setStrokes(s => s + 1)
       scheduleRender()
