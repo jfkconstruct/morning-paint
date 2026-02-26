@@ -2,6 +2,7 @@
 // jfk | Infinite canvas painting journal. Morning pages, but with brushes.
 
 import { useState, useRef, useCallback, useEffect } from 'react'
+import getStroke from 'perfect-freehand'
 
 // ─── TOKENS (Apple-minimal) ───
 const C = {
@@ -546,92 +547,189 @@ function paintWetEdge(tiles, path, color, size, opacity) {
 }
 
 
-// Calligraphy: Zen/Chinese pointed brush
-// Directional brush stamp with tapered feel. Width from pressure, velocity thins/elongates.
-// Pressure controls both width AND opacity: light = grey wash, heavy = solid black.
-// Dry brush = scattered dots at high speed. Ink bleed = rare soft edge dots.
-function strokeCalligraphy(ctx, from, to, color, size, pressure, velocity) {
-  ctx.save()
-  ctx.globalCompositeOperation = 'source-over'
+// Smooth a closed polygon using quadratic Bezier curves through midpoints
+function smoothPolygonPath(ctx, pts) {
+  if (pts.length < 3) return
+  const last = pts[pts.length - 1], first = pts[0]
+  ctx.moveTo((last[0] + first[0]) / 2, (last[1] + first[1]) / 2)
+  for (let i = 0; i < pts.length; i++) {
+    const next = pts[(i + 1) % pts.length]
+    ctx.quadraticCurveTo(pts[i][0], pts[i][1], (pts[i][0] + next[0]) / 2, (pts[i][1] + next[1]) / 2)
+  }
+  ctx.closePath()
+}
 
-  const dx = to.x - from.x
-  const dy = to.y - from.y
-  const dist = Math.sqrt(dx * dx + dy * dy)
-  // Skip micro-segments; they tend to create bead artifacts with stamped ellipses.
-  if (dist < 0.03) { ctx.restore(); return }
+// Calligraphy: Chinese brush with soft edges, bristle texture, dry brush, ink pooling.
+// Uses perfect-freehand for stroke shape, multi-layer rendering for organic ink feel.
+function renderCalligraphyStroke(bufferTiles, points, color, size, isComplete) {
+  if (points.length < 2) return new Set()
+  const rgb = hexToRgb(color)
 
-  const vel = Math.max(0, Math.min(velocity ?? 0, 1))
-  const pr = Math.max(0.0, Math.min(pressure ?? 0.5, 1))
+  // Pressure splay curve: stays narrow below ~0.4, then opens up fast.
+  // Simulates brush belly contacting paper at higher pressure.
+  // Then directional anisotropy on top: vertical strokes wider than horizontal.
+  const enhancedPoints = points.map((pt, i) => {
+    if (i === 0) return pt
+    const raw = pt[2]
+    // p^1.6: light touch stays thin, wide only when you really press
+    const splayed = Math.pow(raw, 1.6)
+    const prev = points[i - 1]
+    const dx = pt[0] - prev[0]
+    const dy = pt[1] - prev[1]
+    const verticalness = Math.abs(Math.sin(Math.atan2(dy, dx)))
+    const dirScale = 0.85 + verticalness * 0.3
+    return [pt[0], pt[1], Math.min(1, splayed * dirScale)]
+  })
 
-  // Width: pressure curve balances dramatic thick-thin with usable mid-range.
-  // pow(1.4) gives ~10:1 ratio with smooth mid-pressure response.
-  // Max width matches other brushes (~1.3x size at full pressure).
-  const prCurve = Math.pow(pr, 1.4)
-  const velFactor = Math.max(0.15, 1 - vel * 0.8)
-  const wBase = size * (0.05 + prCurve * 1.25)
-  const w = Math.max(size * 0.02, wBase * velFactor)
-  const minMinor = Math.max(size * 0.04, w * 0.15)
+  const outlinePoints = getStroke(enhancedPoints, {
+    ...CALLIG_OPTS,
+    size: size * 1.3,
+    last: isComplete,
+  })
+  if (outlinePoints.length < 3) return new Set()
 
-  // Directional width: vertical strokes wider than horizontal (brush anisotropy)
-  const angle = Math.atan2(dy, dx)
-  const verticalness = Math.abs(Math.sin(angle))
-  const dirWidth = w * (0.8 + verticalness * 0.4)
+  // Bounding box for tile coverage (expanded for halo)
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const [x, y] of outlinePoints) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x
+    if (y < minY) minY = y; if (y > maxY) maxY = y
+  }
+  const haloW = size * 0.25
+  const pad = haloW + 4
+  const tMinX = Math.floor((minX - pad) / TILE_SIZE)
+  const tMaxX = Math.floor((maxX + pad) / TILE_SIZE)
+  const tMinY = Math.floor((minY - pad) / TILE_SIZE)
+  const tMaxY = Math.floor((maxY + pad) / TILE_SIZE)
 
-  // Pressure→opacity: light touch = grey wash, heavy = near-solid
-  const pressureAlpha = Math.pow(pr, 0.5)
-  const speedAlpha = 1 - vel * 0.15
-  ctx.globalAlpha = (0.35 + pressureAlpha * 0.65) * speedAlpha
-  ctx.fillStyle = color
-
-  // Directional stamping along the segment for a brush-like footprint
-  const step = Math.max(0.5, Math.min(1.2, dirWidth * (0.3 - vel * 0.1)))
-  const steps = Math.max(1, Math.ceil(dist / step))
-  // Keep stamps near-circular to avoid pointy artifacts; slight elongation only
-  const baseMajor = dirWidth * (1.0 + vel * 0.2)
-  const minor = Math.max(minMinor, dirWidth)
-  // Clamp major axis to segment length to prevent oversized stamps on tiny segments
-  const major = Math.min(baseMajor, Math.max(dist * 1.1, minor))
-  // Start at i=1 to avoid double-stamping shared endpoints between segments
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps
-    const px = from.x + dx * t
-    const py = from.y + dy * t
-    ctx.save()
-    ctx.translate(px, py)
-    ctx.rotate(angle)
-    ctx.beginPath()
-    ctx.ellipse(0, 0, major * 0.5, minor * 0.5, 0, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.restore()
+  // Pre-compute per-point velocity and local width for texture layers
+  const velocities = new Float32Array(points.length)
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i][0] - points[i - 1][0]
+    const dy = points[i][1] - points[i - 1][1]
+    velocities[i] = Math.sqrt(dx * dx + dy * dy)
   }
 
-  // Subtle core line to reduce gaps between stamps
-  ctx.save()
-  ctx.globalAlpha *= 0.2
-  ctx.strokeStyle = color
-  ctx.lineWidth = Math.max(minMinor * 0.6, size * 0.02)
-  ctx.lineCap = 'round'
-  ctx.lineJoin = 'round'
-  ctx.beginPath()
-  ctx.moveTo(from.x, from.y)
-  ctx.lineTo(to.x, to.y)
-  ctx.stroke()
-  ctx.restore()
+  const touched = new Set()
+  for (let tx = tMinX; tx <= tMaxX; tx++) {
+    for (let ty = tMinY; ty <= tMaxY; ty++) {
+      const key = `${tx},${ty}`
+      touched.add(key)
+      const tile = ensureTile(bufferTiles, key)
+      const ctx = tile.getContext('2d')
+      ctx.save()
+      ctx.translate(-tx * TILE_SIZE, -ty * TILE_SIZE)
+      ctx.clearRect(tx * TILE_SIZE, ty * TILE_SIZE, TILE_SIZE, TILE_SIZE)
 
-  // Rare ink bleed at edges: slow + heavy strokes only
-  if (vel < 0.06 && pr > 0.7 && w > 8 && Math.random() < 0.015) {
-    const mx = (from.x + to.x) * 0.5
-    const my = (from.y + to.y) * 0.5
-    const angle = Math.random() * Math.PI * 2
-    const bleedDist = w * 0.5 * (0.9 + Math.random() * 0.3)
-    ctx.fillStyle = color
-    ctx.globalAlpha = 0.06 + Math.random() * 0.06
-    ctx.beginPath()
-    ctx.arc(mx + Math.cos(angle) * bleedDist, my + Math.sin(angle) * bleedDist, 0.5 + Math.random() * 1, 0, Math.PI * 2)
-    ctx.fill()
+      // Layer 1: Soft outer halo (feathered edge)
+      ctx.globalAlpha = 0.15
+      ctx.strokeStyle = color
+      ctx.lineWidth = haloW
+      ctx.lineJoin = 'round'
+      ctx.lineCap = 'round'
+      ctx.beginPath()
+      smoothPolygonPath(ctx, outlinePoints)
+      ctx.stroke()
+
+      // Layer 2: Core fill (smoothed polygon)
+      ctx.fillStyle = color
+      ctx.globalAlpha = 0.92
+      ctx.beginPath()
+      smoothPolygonPath(ctx, outlinePoints)
+      ctx.fill()
+
+      // Layer 3: Bristle streaks (parallel lines along stroke path)
+      const bristleCount = 4
+      const bristleAlpha = 0.08
+      for (let i = 1; i < points.length; i++) {
+        const pr = points[i][2]
+        if (pr < 0.35) continue
+        const px = points[i][0], py = points[i][1]
+        const prevX = points[i - 1][0], prevY = points[i - 1][1]
+        const dx = px - prevX, dy = py - prevY
+        const segLen = Math.sqrt(dx * dx + dy * dy)
+        if (segLen < 0.5) continue
+        const nx = -dy / segLen, ny = dx / segLen
+        const localW = size * 1.3 * pr * 0.5
+        for (let b = 0; b < bristleCount; b++) {
+          const offset = ((b / (bristleCount - 1)) - 0.5) * localW * 1.6
+          const bx = px + nx * offset, by = py + ny * offset
+          const bpx = prevX + nx * offset, bpy = prevY + ny * offset
+          const grain = sampleGrain(bx, by)
+          if (grain < 0.4) continue
+          ctx.globalAlpha = bristleAlpha * grain * pr
+          ctx.strokeStyle = `rgb(${Math.max(0, rgb.r - 20)},${Math.max(0, rgb.g - 20)},${Math.max(0, rgb.b - 20)})`
+          ctx.lineWidth = 0.8 + pr * 0.4
+          ctx.lineCap = 'round'
+          ctx.beginPath()
+          ctx.moveTo(bpx, bpy)
+          ctx.lineTo(bx, by)
+          ctx.stroke()
+        }
+      }
+
+      // Layer 4: Dry brush / flying white (velocity-driven grain punch-through)
+      const dryThreshold = 8
+      for (let i = 1; i < points.length; i++) {
+        const vel = velocities[i]
+        if (vel < dryThreshold) continue
+        const dryAmount = Math.min(1, (vel - dryThreshold) / 16)
+        const px = points[i][0], py = points[i][1]
+        const pr = points[i][2]
+        const localW = size * 1.3 * pr * 0.6
+        const streakCount = Math.ceil(localW * 0.3)
+        const prevX = points[i - 1][0], prevY = points[i - 1][1]
+        const dx = px - prevX, dy = py - prevY
+        const segLen = Math.sqrt(dx * dx + dy * dy)
+        if (segLen < 0.5) continue
+        const nx = -dy / segLen, ny = dx / segLen
+        for (let s = 0; s < streakCount; s++) {
+          const offset = ((Math.random() - 0.5) * localW * 2)
+          const sx = px + nx * offset, sy = py + ny * offset
+          const grain = sampleGrain(sx, sy)
+          if (grain < 0.5) continue
+          ctx.globalCompositeOperation = 'destination-out'
+          ctx.globalAlpha = dryAmount * grain * 0.35
+          ctx.fillStyle = 'white'
+          ctx.beginPath()
+          ctx.arc(sx, sy, 0.6 + Math.random() * 1.2, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
+      ctx.globalCompositeOperation = 'source-over'
+
+      // Layer 5: Ink pooling at turns (pen-up only)
+      if (isComplete && points.length > 4) {
+        for (let i = 2; i < points.length - 2; i++) {
+          const ax = points[i][0] - points[i - 2][0], ay = points[i][1] - points[i - 2][1]
+          const bx = points[i + 2][0] - points[i][0], by = points[i + 2][1] - points[i][1]
+          const aLen = Math.sqrt(ax * ax + ay * ay) || 1
+          const bLen = Math.sqrt(bx * bx + by * by) || 1
+          const dot = (ax * bx + ay * by) / (aLen * bLen)
+          const curvature = Math.acos(Math.max(-1, Math.min(1, dot)))
+          if (curvature < 0.3) continue
+          const pr = points[i][2]
+          if (pr < 0.3) continue
+          const poolR = size * pr * 0.4 * (curvature / Math.PI)
+          const g = ctx.createRadialGradient(
+            points[i][0], points[i][1], poolR * 0.1,
+            points[i][0], points[i][1], poolR
+          )
+          const darkR = Math.max(0, rgb.r - 30), darkG = Math.max(0, rgb.g - 30), darkB = Math.max(0, rgb.b - 30)
+          g.addColorStop(0, `rgba(${darkR},${darkG},${darkB},0.15)`)
+          g.addColorStop(0.6, `rgba(${darkR},${darkG},${darkB},0.06)`)
+          g.addColorStop(1, `rgba(${darkR},${darkG},${darkB},0)`)
+          ctx.globalAlpha = 1
+          ctx.fillStyle = g
+          ctx.beginPath()
+          ctx.arc(points[i][0], points[i][1], poolR, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
+
+      ctx.restore()
+    }
   }
-
-  ctx.restore()
+  return touched
 }
 
 // Ink Wash: sumi-e diffusion brush
@@ -1109,7 +1207,7 @@ const STROKE_FN = {
   felt: strokeFelt,
   watercolor: strokeWatercolor,
   watercolor2: strokeWatercolor,
-  calligraphy: strokeCalligraphy,
+  // calligraphy uses renderCalligraphyStroke (full-stroke polygon, not per-segment)
   inkwash: strokeInkWash,
   pastel: strokePastel,
   charcoal: strokeCharcoal,
@@ -1502,6 +1600,15 @@ const TILE_SIZE = 2048
 const WC_COMPOSITE_ALPHA = 0.22
 const OIL_COMPOSITE_ALPHA = 0.88
 const INK_COMPOSITE_ALPHA = 1.0
+const CALLIG_OPTS = {
+  size: 16,
+  thinning: 0.85,
+  smoothing: 0.6,
+  streamline: 0.5,
+  start: { taper: true, cap: false },
+  end: { taper: true, cap: false },
+  simulatePressure: false,
+}
 const INKWASH_COMPOSITE_ALPHA = 0.35
 const WC2_COMPOSITE_ALPHA = 1.0
 const WC2_SCALE = 0.2
@@ -1812,6 +1919,8 @@ export default function MorningPaint() {
 
   // Catmull-Rom: ring buffer of last 4 world-space points with pressure
   const splineBufferRef = useRef([])
+  const calligPointsRef = useRef([])
+  const calligDirtyRef = useRef(new Set())
 
   const smoothPoint = useCallback((raw, pressure) => {
     const ema = emaRef.current
@@ -2251,6 +2360,8 @@ export default function MorningPaint() {
     paintPressureRef.current = lastPressureRef.current
     emaRef.current = { x: 0, y: 0, vx: 0, vy: 0, lastTime: 0 }
     splineBufferRef.current = []
+    calligPointsRef.current = []
+    calligDirtyRef.current = new Set()
     velocityRef.current = 0
     const sp = getScreenPos(e)
     const rawWp = screenToWorld(sp.x, sp.y)
@@ -2410,7 +2521,7 @@ export default function MorningPaint() {
               }
             }
           } else if (curBrush === 'calligraphy') {
-            paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeCalligraphy)
+            // no-op: calligraphy accumulates points and renders full polygon below
           } else if (curBrush === 'inkwash') {
             paintToBuffer(strokeBufRef.current, from, to, color, size, pr, vel, strokeInkWash)
           } else {
@@ -2446,6 +2557,20 @@ export default function MorningPaint() {
 
       lastPosRef.current = wp
 
+      // Calligraphy: accumulate points, clear previous tiles, render full polygon
+      if (curBrush === 'calligraphy' && useBuffer) {
+        calligPointsRef.current.push([wp.x, wp.y, pressure])
+        const prevDirty = calligDirtyRef.current
+        prevDirty.forEach(key => {
+          const tile = strokeBufRef.current?.get(key)
+          if (tile) tile.getContext('2d').clearRect(0, 0, TILE_SIZE, TILE_SIZE)
+        })
+        const newDirty = renderCalligraphyStroke(
+          strokeBufRef.current, calligPointsRef.current, color, size, false
+        )
+        calligDirtyRef.current = newDirty
+      }
+
       // Collect path for watercolor wet edge (subsample: skip points too close together)
       if (brushRef.current === 'watercolor') {
         const wcPath = wcPathRef.current
@@ -2475,7 +2600,16 @@ export default function MorningPaint() {
 
       // Defer heavy composite work so next startDraw isn't blocked
       setTimeout(() => {
-        // Calligraphy taper handled naturally by pressure release — no artificial tail
+        // Calligraphy: final render with end taper
+        if (bufBrush === 'calligraphy' && calligPointsRef.current.length >= 2) {
+          calligDirtyRef.current.forEach(key => {
+            const tile = pendingBuf.get(key)
+            if (tile) tile.getContext('2d').clearRect(0, 0, TILE_SIZE, TILE_SIZE)
+          })
+          renderCalligraphyStroke(pendingBuf, calligPointsRef.current, color, size, true)
+        }
+        calligPointsRef.current = []
+        calligDirtyRef.current = new Set()
 
         if (bufBrush === 'watercolor2' && strokeSimRef.current) {
           stepWatercolorSim(strokeSimRef.current, WC2_STEPS)
