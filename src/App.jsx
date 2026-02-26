@@ -1704,7 +1704,7 @@ function loadSettings() {
 }
 
 // ─── SAVE HELPERS ───
-function exportPNG(tiles, paperBg, bgImage, bgImagePos, bgOpacityPct) {
+function exportPNG(tiles, paperBg, bgImage, bgImagePos, bgOpacityPct, fillLayer) {
   if (tiles.size === 0) return
 
   // Find bounding box of all tiles
@@ -1717,17 +1717,57 @@ function exportPNG(tiles, paperBg, bgImage, bgImagePos, bgOpacityPct) {
     maxTY = Math.max(maxTY, ty)
   })
 
-  const w = (maxTX - minTX + 1) * TILE_SIZE
-  const h = (maxTY - minTY + 1) * TILE_SIZE
+  // Composite all tiles onto a temp canvas to find tight content bounds
+  const fullW = (maxTX - minTX + 1) * TILE_SIZE
+  const fullH = (maxTY - minTY + 1) * TILE_SIZE
+  const tmp = document.createElement('canvas')
+  tmp.width = fullW; tmp.height = fullH
+  const tctx = tmp.getContext('2d')
+  tiles.forEach((tile, key) => {
+    const [tx, ty] = key.split(',').map(Number)
+    tctx.drawImage(tile, (tx - minTX) * TILE_SIZE, (ty - minTY) * TILE_SIZE)
+  })
+
+  // Scan for non-transparent pixel bounds (sample every 4th pixel for speed)
+  const id = tctx.getImageData(0, 0, fullW, fullH)
+  const d = id.data
+  let cMinX = fullW, cMinY = fullH, cMaxX = 0, cMaxY = 0
+  const step = 4
+  for (let y = 0; y < fullH; y += step) {
+    for (let x = 0; x < fullW; x += step) {
+      if (d[(y * fullW + x) * 4 + 3] > 0) {
+        if (x < cMinX) cMinX = x
+        if (x > cMaxX) cMaxX = x
+        if (y < cMinY) cMinY = y
+        if (y > cMaxY) cMaxY = y
+      }
+    }
+  }
+
+  // No visible content
+  if (cMaxX <= cMinX || cMaxY <= cMinY) return
+
+  // Add padding and snap to step grid
+  const pad = 32
+  cMinX = Math.max(0, cMinX - pad)
+  cMinY = Math.max(0, cMinY - pad)
+  cMaxX = Math.min(fullW - 1, cMaxX + pad + step)
+  cMaxY = Math.min(fullH - 1, cMaxY + pad + step)
+
+  const cropW = cMaxX - cMinX + 1
+  const cropH = cMaxY - cMinY + 1
+
+  // World-space offset of crop region
+  const worldOX = minTX * TILE_SIZE + cMinX
+  const worldOY = minTY * TILE_SIZE + cMinY
 
   // Cap at 8192 to avoid memory issues
-  const scale = Math.min(1, 8192 / Math.max(w, h))
-  const outW = Math.round(w * scale)
-  const outH = Math.round(h * scale)
+  const scale = Math.min(1, 8192 / Math.max(cropW, cropH))
+  const outW = Math.round(cropW * scale)
+  const outH = Math.round(cropH * scale)
 
   const out = document.createElement('canvas')
-  out.width = outW
-  out.height = outH
+  out.width = outW; out.height = outH
   const ctx = out.getContext('2d')
 
   // Fill with paper background
@@ -1739,21 +1779,23 @@ function exportPNG(tiles, paperBg, bgImage, bgImagePos, bgOpacityPct) {
     ctx.save()
     ctx.scale(scale, scale)
     ctx.globalAlpha = (bgOpacityPct ?? 30) / 100
-    const dx = bgImagePos.x - minTX * TILE_SIZE
-    const dy = bgImagePos.y - minTY * TILE_SIZE
-    ctx.drawImage(bgImage, dx, dy, bgImagePos.w, bgImagePos.h)
+    ctx.drawImage(bgImage, bgImagePos.x - worldOX, bgImagePos.y - worldOY, bgImagePos.w, bgImagePos.h)
     ctx.restore()
   }
 
-  // Draw all tiles
+  // Fill layer (between bg and strokes)
+  if (fillLayer) {
+    ctx.save()
+    ctx.globalAlpha = fillLayer.alpha
+    ctx.fillStyle = fillLayer.color
+    ctx.fillRect(0, 0, outW, outH)
+    ctx.restore()
+  }
+
+  // Draw cropped tile content
   ctx.save()
   ctx.scale(scale, scale)
-  tiles.forEach((tile, key) => {
-    const [tx, ty] = key.split(',').map(Number)
-    const dx = (tx - minTX) * TILE_SIZE
-    const dy = (ty - minTY) * TILE_SIZE
-    ctx.drawImage(tile, dx, dy)
-  })
+  ctx.drawImage(tmp, cMinX, cMinY, cropW, cropH, 0, 0, cropW, cropH)
   ctx.restore()
 
   // Trigger download
@@ -2614,7 +2656,7 @@ export default function MorningPaint() {
   undoRef.current = undo
 
   const savePNG = useCallback(() => {
-    exportPNG(tilesRef.current, currentPaper.bg, bgImageRef.current, bgImagePosRef.current, bgOpacity)
+    exportPNG(tilesRef.current, currentPaper.bg, bgImageRef.current, bgImagePosRef.current, bgOpacity, fillLayerRef.current)
   }, [currentPaper, bgOpacity])
 
   const toggleFullscreen = useCallback(() => {
