@@ -1241,20 +1241,8 @@ const STROKE_FN = {
   eraser: strokeEraser,
 }
 
-// Paint-behind fill: fills color UNDER existing strokes on all existing tiles.
-// Uses destination-over composite so strokes stay on top. Instant, no scanning.
-function paintBehind(tiles, fillColor, opacityPct, tileSize) {
-  const alpha = (opacityPct / 100)
-  tiles.forEach((tile) => {
-    const ctx = tile.getContext('2d')
-    ctx.save()
-    ctx.globalCompositeOperation = 'destination-over'
-    ctx.globalAlpha = alpha
-    ctx.fillStyle = fillColor
-    ctx.fillRect(0, 0, tileSize, tileSize)
-    ctx.restore()
-  })
-}
+// Fill is now render-time only — stored as state, drawn in renderViewport
+// between bg image and tiles. No tile mutation needed.
 
 // ─── WATERCOLOR V2 (per-stroke low-res sim) ───
 function ensureWc2Tile(simTiles, tx, ty) {
@@ -1902,6 +1890,7 @@ export default function MorningPaint() {
 
   // Track last brush before eraser for toggle-back
   const prevBrushRef = useRef('calligraphy')
+  const fillLayerRef = useRef(saved?.fillLayer || null) // { color, alpha } or null
   const saveTimerRef = useRef(null)
   const restoredRef = useRef(false)
 
@@ -1911,6 +1900,7 @@ export default function MorningPaint() {
       brush: brushRef.current,
       color, size, opacity, paper,
       view: viewRef.current,
+      fillLayer: fillLayerRef.current,
     })
     saveTilesToDB(tilesRef.current)
   }, [color, size, opacity, paper])
@@ -2097,6 +2087,16 @@ export default function MorningPaint() {
       ctx.restore()
     }
 
+    // Fill layer: solid color behind all strokes
+    const fl = fillLayerRef.current
+    if (fl) {
+      ctx.save()
+      ctx.globalAlpha = fl.alpha
+      ctx.fillStyle = fl.color
+      ctx.fillRect(0, 0, w, h)
+      ctx.restore()
+    }
+
     // Draw tiles
     const tiles = tilesRef.current
     const tMinX = Math.floor(v.ox / TILE_SIZE)
@@ -2277,9 +2277,9 @@ export default function MorningPaint() {
       if (historyRef.current.length > 100) historyRef.current.shift()
     }, 0)
 
-    // Fill tool: paint-behind on all existing tiles (color goes under strokes)
+    // Fill tool: set fill layer (rendered behind tiles in renderViewport)
     if (brushRef.current === 'fill') {
-      paintBehind(tilesRef.current, color, opacity, TILE_SIZE)
+      fillLayerRef.current = { color, alpha: opacity / 100 }
       drawingRef.current = false
       setStrokes(s => s + 1)
       scheduleRender()
@@ -2597,6 +2597,7 @@ export default function MorningPaint() {
     historyRef.current.push(snapshot)
     if (historyRef.current.length > 100) historyRef.current.shift()
     tilesRef.current.clear()
+    fillLayerRef.current = null
     setStrokes(0)
     clearTilesDB()
     renderViewport()
