@@ -565,9 +565,18 @@ function renderCalligraphyStroke(bufferTiles, points, color, size, isComplete) {
   if (points.length < 2) return new Set()
   const rgb = hexToRgb(color)
 
-  // Pressure splay curve: stays narrow below ~0.4, then opens up fast.
-  // Simulates brush belly contacting paper at higher pressure.
-  // Then directional anisotropy on top: vertical strokes wider than horizontal.
+  // Tilt-aware size: upright pencil = narrow tip, flat = broad brush splay.
+  // Average tilt across stroke for stable size (avoids jitter from per-point tilt).
+  let tiltSum = 0, tiltCount = 0
+  for (let i = 0; i < points.length; i++) {
+    const t = points[i][3] ?? 0
+    if (t > 0) { tiltSum += t; tiltCount++ }
+  }
+  const avgTilt = tiltCount > 0 ? tiltSum / tiltCount : 0
+  // 1.3x upright → 2.5x fully flat
+  const tiltScale = 1.3 + avgTilt * 1.2
+
+  // Pressure splay curve + directional anisotropy
   const enhancedPoints = points.map((pt, i) => {
     if (i === 0) return pt
     const raw = pt[2]
@@ -583,7 +592,7 @@ function renderCalligraphyStroke(bufferTiles, points, color, size, isComplete) {
 
   const outlinePoints = getStroke(enhancedPoints, {
     ...CALLIG_OPTS,
-    size: size * 1.3,
+    size: size * tiltScale,
     last: isComplete,
   })
   if (outlinePoints.length < 3) return new Set()
@@ -2559,7 +2568,10 @@ export default function MorningPaint() {
 
       // Calligraphy: accumulate points, clear previous tiles, render full polygon
       if (curBrush === 'calligraphy' && useBuffer) {
-        calligPointsRef.current.push([wp.x, wp.y, pressure])
+        // altitudeAngle: π/2 = upright (narrow), 0 = flat (broad). Normalize to 0-1 tilt factor.
+        const alt = ev.altitudeAngle ?? (Math.PI / 2)
+        const tilt = 1 - (alt / (Math.PI / 2))
+        calligPointsRef.current.push([wp.x, wp.y, pressure, tilt])
         const prevDirty = calligDirtyRef.current
         prevDirty.forEach(key => {
           const tile = strokeBufRef.current?.get(key)
